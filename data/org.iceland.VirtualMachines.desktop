@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Virtual Machines
+GenericName=Virtual Machine Manager
+Comment=Create and run protected virtual machines (Gunyah hypervisor)
+Exec=iceland-vms
+Icon=org.iceland.VirtualMachines
+Terminal=false
+Categories=System;Emulator;GTK;
+Keywords=VM;virtual;machine;crosvm;gunyah;iso;
+StartupNotify=true
+X-GNOME-UsesNotifications=false

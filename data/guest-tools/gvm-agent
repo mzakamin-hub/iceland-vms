@@ -1,0 +1,179 @@
+#!/bin/sh
+# gvm-agent: lets the iceland-vms host shut this guest down cleanly.
+# Reads one command per line from the virtio console /dev/hvc0 (crosvm --serial hardware=virtio-console):
+#   ping -> pong, poweroff, reboot, ip -> "ip <address>"
+# crosvm's power button does nothing for arm64 device-tree guests, so this is the clean-stop path.
+#
+# gvm-agent --setup (ExecStartPre, before the display manager): applies the host's per-run desktop flags
+# from the 9p share (tag gvmshare, directory tools/):
+#   noglamor   -> /etc/X11/xorg.conf.d/20-iceland-noglamor.conf (Xorg modesetting without glamor), else removed
+#   wayland    -> the autologin session is a Wayland one (labwc preferred) instead of Xorg
+#   zink       -> lightdm starts Xorg with MESA_LOADER_DRIVER_OVERRIDE=zink (+ profile.d for the session)
+#   autologin  -> autologin of the cloud-init user in lightdm / GDM (touch / the host OSK cannot type into a
+#                 greeter in the VM window), else our autologin drop-ins are removed
+if [ "${1:-}" = --setup ]; then
+	share=/mnt/gvmshare
+	mkdir -p "$share"
+	mountpoint -q "$share" || mount -t 9p -o trans=virtio,version=9p2000.L,ro gvmshare "$share" 2>/dev/null
+	user=$(awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /nologin|false/ {print $1; exit}' /etc/passwd)
+	x=/etc/X11/xorg.conf.d/20-iceland-noglamor.conf
+	if [ -f "$share/tools/noglamor" ]; then
+		mkdir -p /etc/X11/xorg.conf.d
+		printf 'Section "Device"\n\tIdentifier "iceland-virtio-gpu"\n\tDriver "modesetting"\n\tOption "AccelMethod" "none"\nEndSection\n' > "$x"
+	else
+		rm -f "$x"
+	fi
+	# zink: the guest's Xorg (glamor) and the session's GL through zink over venus (Vulkan) instead of virgl
+	z=/etc/lightdm/lightdm.conf.d/51-iceland-zink.conf
+	zp=/etc/profile.d/iceland-zink.sh
+	if [ -f "$share/tools/zink" ] && [ -d /etc/lightdm ]; then
+		mkdir -p /etc/lightdm/lightdm.conf.d
+		printf '[Seat:*]\nxserver-command=env MESA_LOADER_DRIVER_OVERRIDE=zink X\n' > "$z"
+		printf 'export MESA_LOADER_DRIVER_OVERRIDE=zink\n' > "$zp"
+	else
+		rm -f "$z" "$zp"
+	fi
+	l=/etc/lightdm/lightdm.conf.d/50-iceland-autologin.conf
+	g=/etc/gdm/custom.conf.d-iceland-autologin
+	if [ -f "$share/tools/autologin" ] && [ -n "$user" ]; then
+		if [ -d /etc/lightdm ]; then
+			mkdir -p /etc/lightdm/lightdm.conf.d
+			s=$(ls /usr/share/xsessions 2>/dev/null | sed -n 's/\.desktop$//p' | head -n1)
+			# wayland flag: autologin into a Wayland session (labwc preferred) instead of Xorg (V6, 24 Oct)
+			if [ -f "$share/tools/wayland" ]; then
+				# v10e: Fedora 44's labwc ships no session file (v10d V5WS: /usr/share/wayland-sessions empty, so the
+				# "labwc" rows ran Xfce); write the standard one when labwc is installed
+				if [ -x /usr/bin/labwc ] && ! ls /usr/share/wayland-sessions/*.desktop > /dev/null 2>&1; then
+					mkdir -p /usr/share/wayland-sessions
+					printf '[Desktop Entry]\nName=labwc\nComment=A Wayland stacking compositor\nExec=labwc\nType=Application\nDesktopNames=labwc;wlroots\n' \
+						> /usr/share/wayland-sessions/labwc.desktop
+				fi
+				w=$(ls /usr/share/wayland-sessions 2>/dev/null | sed -n 's/\.desktop$//p' | grep -m1 -E '^labwc$' ||
+					ls /usr/share/wayland-sessions 2>/dev/null | sed -n 's/\.desktop$//p' | head -n1)
+				[ -n "$w" ] && s=$w
+			fi
+			# v10f: v10e still logged into Xfce with autologin-session=labwc. Make the choice unambiguous: lightdm
+			# must search the wayland-sessions dir, user-session too, and the user's remembered session (AccountsService
+			# + ~/.dmrc), which lightdm prefers for an autologin on some versions, is set the same
+			printf '[LightDM]\nsessions-directory=/usr/share/lightdm/sessions:/usr/share/xsessions:/usr/share/wayland-sessions\n[Seat:*]\nautologin-user=%s\nautologin-session=%s\nuser-session=%s\n' \
+				"$user" "${s:-xfce}" "${s:-xfce}" > "$l"
+			a=/var/lib/AccountsService/users/$user
+			if [ -d /var/lib/AccountsService/users ]; then   # keep the file's other keys (language, icon)
+				[ -f "$a" ] || printf '[User]\nSystemAccount=false\n' > "$a"
+				for k in Session XSession; do
+					if grep -q "^$k=" "$a"; then sed -i "s/^$k=.*/$k=${s:-xfce}/" "$a"
+					else sed -i "/^\[User\]/a $k=${s:-xfce}" "$a"; fi
+				done
+			fi
+			h=$(getent passwd "$user" | cut -d: -f6)
+			[ -n "$h" ] && [ -d "$h" ] && printf '[Desktop]\nSession=%s\n' "${s:-xfce}" > "$h/.dmrc" && chown "$user:" "$h/.dmrc"
+			getent group autologin > /dev/null || groupadd -r autologin
+			usermod -aG autologin "$user"
+		fi
+		if [ -f /etc/gdm/custom.conf ] && ! grep -q '^AutomaticLogin=' /etc/gdm/custom.conf; then
+			cp /etc/gdm/custom.conf "$g"
+			sed -i "s/^\[daemon\]/[daemon]\nAutomaticLoginEnable=True\nAutomaticLogin=$user/" /etc/gdm/custom.conf
+		fi
+	else
+		rm -f "$l"
+		[ -f "$g" ] && mv -f "$g" /etc/gdm/custom.conf
+	fi
+	# v10g: Fedora's lightdm ignores the labwc session for the autologin (v10f: it ran "Xsession startxfce4" with
+	# autologin-session / user-session / AccountsService all set to labwc). The Wayland desktop therefore does not
+	# go through lightdm at all: a systemd unit logs the user in on tty1 (PAM "login", logind session of type
+	# wayland) and runs labwc with a terminal; lightdm is masked for this boot only (--runtime), so without the
+	# flag the next boot is the normal Xorg desktop again.
+	wu=/etc/systemd/system/gvm-wayland-session.service
+	if [ -f "$share/tools/wayland" ] && [ -x /usr/bin/labwc ] && [ -n "$user" ]; then
+		h=$(getent passwd "$user" | cut -d: -f6)
+		mkdir -p "$h/.config/labwc"
+		[ -f "$h/.config/labwc/autostart" ] || printf '%s\n' "command -v foot > /dev/null && foot --maximized &" > "$h/.config/labwc/autostart"
+		chown -R "$user:" "$h/.config"
+		cat > "$wu" <<EOF
+[Unit]
+Description=iceland gvm: labwc Wayland session for $user on tty1
+After=systemd-user-sessions.service plymouth-quit-wait.service gvm-agent.service getty@tty1.service display-manager.service
+Conflicts=getty@tty1.service display-manager.service
+Wants=gvm-wayland-check.service
+
+[Service]
+User=$user
+PAMName=login
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_DESKTOP=labwc XDG_CURRENT_DESKTOP=labwc:wlroots
+# v10h: the logind session only gets DRM master while its VT is the active one (v10g: labwc ran, the CRTC kept
+# fbcon); -d = wlroots debug log (renderer, allocator, DRM commits) in the journal
+ExecStartPre=-+/usr/bin/chvt 1
+ExecStart=/usr/bin/labwc -d
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical.target
+EOF
+		# v10i: the session's FIRST start after the VT handover never got the display (v10h: V5W-4 / -10 black,
+		# every restart drawn). gvm-wayland-check waits until labwc should have taken the screen and restarts the
+		# session once (per boot) when the primary plane still shows a framebuffer that labwc did not allocate.
+		mkdir -p /usr/local/libexec
+		cat > /usr/local/libexec/gvm-wayland-check <<'EOF'
+#!/bin/sh
+# iceland gvm: restart the labwc session once if it did not take the display (owner of the scanout framebuffer)
+[ -e /run/gvm-wayland-kicked ] && exit 0
+d=/sys/kernel/debug/dri/0
+mountpoint -q /sys/kernel/debug || mount -t debugfs none /sys/kernel/debug 2>/dev/null
+owner=""
+for i in 1 2 3 4 5 6; do
+	sleep 2
+	fb=$(awk '/^plane\[/ {p = 1} p && /fb=/ {sub(/.*fb=/, ""); print $1; exit}' $d/state 2>/dev/null)
+	owner=$(awk -v id="$fb" 'index($0, "framebuffer[" id "]") == 1 {f = 1} f && /allocated by/ {print $NF; exit}' $d/framebuffer 2>/dev/null)
+	[ "$owner" = labwc ] && { echo "gvm-wayland-check: labwc owns the scanout (fb $fb)"; exit 0; }
+done
+echo "gvm-wayland-check: scanout fb ${fb:-?} owned by ${owner:-?}, not labwc: restarting the session once"
+touch /run/gvm-wayland-kicked
+systemctl restart --no-block gvm-wayland-session.service
+EOF
+		chmod 755 /usr/local/libexec/gvm-wayland-check
+		cat > /etc/systemd/system/gvm-wayland-check.service <<EOF
+[Unit]
+Description=iceland gvm: restart the labwc session once if it did not take the display
+After=gvm-wayland-session.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/gvm-wayland-check
+EOF
+		systemctl daemon-reload
+		systemctl mask --runtime display-manager.service > /dev/null 2>&1
+		systemctl stop display-manager.service getty@tty1.service > /dev/null 2>&1
+		systemctl start --no-block gvm-wayland-session.service
+	else
+		if [ -f "$wu" ]; then
+			systemctl stop gvm-wayland-session.service 2> /dev/null
+			rm -f "$wu" /etc/systemd/system/gvm-wayland-check.service /usr/local/libexec/gvm-wayland-check
+			systemctl daemon-reload
+		fi
+		systemctl unmask --runtime display-manager.service > /dev/null 2>&1
+	fi
+	exit 0
+fi
+dev=/dev/hvc0
+[ -c "$dev" ] || exec sleep infinity     # no virtio console: nothing to do (and no restart loop)
+stty -F "$dev" -echo -onlcr 2>/dev/null
+exec 3<>"$dev"
+echo "hello $(uname -r)" >&3
+while IFS= read -r cmd <&3; do
+	case "$cmd" in
+	ping) echo pong >&3 ;;
+	poweroff) echo "ok poweroff" >&3; systemctl poweroff || poweroff ;;
+	reboot) echo "ok reboot" >&3; systemctl reboot || reboot ;;
+	ip) echo "ip $(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | head -n1)" >&3 ;;
+	esac
+done

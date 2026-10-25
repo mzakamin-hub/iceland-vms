@@ -1,0 +1,8 @@
+#!/bin/sh
+# systemd-sleep hook (/usr/lib/systemd/system-sleep/iceland-vms): a protected VM must not be running
+# while the tablet suspends (its memory is lent to the hypervisor; untested). Clean shutdown first
+# (guest agent, up to 45 s), then crosvm stop.
+case "$1" in
+pre) /usr/libexec/iceland-vms/iceland-vms-helper stop-all ;;
+esac
+exit 0

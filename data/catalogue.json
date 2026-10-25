@@ -1,0 +1,221 @@
+{
+  "version": 1,
+  "generated": "2026-10-23",
+  "source": "research/distros.json (kernel configs inspected on the PC)",
+  "entries": [
+    {
+      "id": "fedora-44-cloud",
+      "name": "Fedora 44 Cloud",
+      "version": "44",
+      "mode": "cloud-direct",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-Base-Generic-44-1.7.aarch64.qcow2",
+      "size": 528154624,
+      "sha256": "55c60a3b80d3616a08705afd0459e75fe9f03c54aba7a46e4002a41a72fa0d5b",
+      "format": "qcow2",
+      "verified_by": "OpenPGP-signed checksum file, key 36F612DCF27F7D1A48A835E4DBFCF71C6D9F90A6",
+      "checksum_url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/aarch64/images/Fedora-Cloud-44-1.7-aarch64-CHECKSUM",
+      "signature_url": "(inline clearsigned)",
+      "boot": {
+        "root": "PARTUUID=51293621-3df4-4df4-95a5-16321a399417",
+        "rootfstype": "btrfs",
+        "rootflags": "subvol=root"
+      },
+      "cloud_init": true,
+      "cloud_user": "gvm",
+      "image_default_user": "fedora",
+      "own_kernel_restricted_dma": false,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 2048,
+        "disk_gib": 20
+      },
+      "status": "proven",
+      "notes": "Proven on the tablet (V2, 23 Oct 2026: boot, DHCP, DNS, HTTPS, dnf). Add a desktop with dnf, e.g. @xfce-desktop-environment."
+    },
+    {
+      "id": "ubuntu-26.04-cloud",
+      "name": "Ubuntu 26.04 LTS Server (cloud)",
+      "version": "26.04.1 LTS",
+      "mode": "cloud-direct",
+      "url": "https://cloud-images.ubuntu.com/releases/26.04/release-20261016/ubuntu-26.04-server-cloudimg-arm64.img",
+      "size": 940373504,
+      "sha256": "8eb876c2ccc4b6ff89e4a65d511815923b285e04503ba465809bf587f763da24",
+      "format": "qcow2",
+      "verified_by": "OpenPGP-signed checksum file, key D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81",
+      "checksum_url": "https://cloud-images.ubuntu.com/releases/26.04/release-20261016/SHA256SUMS",
+      "signature_url": "https://cloud-images.ubuntu.com/releases/26.04/release-20261016/SHA256SUMS.gpg",
+      "boot": {
+        "root": "PARTUUID=25cd4a53-fb27-487a-bf38-f5579f5e260d",
+        "rootfstype": "ext4",
+        "rootflags": ""
+      },
+      "cloud_init": true,
+      "cloud_user": "gvm",
+      "image_default_user": "ubuntu",
+      "own_kernel_restricted_dma": true,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 2048,
+        "disk_gib": 20
+      },
+      "status": "untested-on-device",
+      "notes": "Its own kernel also supports protected VMs, so it could later boot through UEFI too."
+    },
+    {
+      "id": "debian-13-cloud",
+      "name": "Debian 13 (genericcloud)",
+      "version": "13.7 (trixie)",
+      "mode": "cloud-direct",
+      "url": "https://cloud.debian.org/images/cloud/trixie/20261021-2638/debian-13-genericcloud-arm64-20261021-2638.qcow2",
+      "size": 336265216,
+      "sha256": "2e2da616418aab0474f4e582efaa0d90afe9bac63a0b5e8ecae0fb187a65cb0f",
+      "format": "qcow2",
+      "verified_by": "checksum file over https (no signature published)",
+      "checksum_url": "https://cloud.debian.org/images/cloud/trixie/20261021-2638/SHA512SUMS",
+      "signature_url": null,
+      "boot": {
+        "root": "PARTUUID=194f4bfc-04a8-48a7-868d-ebe69b12df74",
+        "rootfstype": "ext4",
+        "rootflags": ""
+      },
+      "cloud_init": true,
+      "cloud_user": "gvm",
+      "image_default_user": "debian",
+      "own_kernel_restricted_dma": false,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 2048,
+        "disk_gib": 20
+      },
+      "status": "untested-on-device",
+      "notes": "Debian publishes no signature for its cloud images: sha512 checked over https, sha256 pinned here."
+    },
+    {
+      "id": "almalinux-10.2-cloud",
+      "name": "AlmaLinux 10.2 (GenericCloud)",
+      "version": "10.2",
+      "mode": "cloud-direct",
+      "url": "https://repo.almalinux.org/almalinux/10/cloud/aarch64/images/AlmaLinux-10-GenericCloud-10.2-20261012.0.aarch64.qcow2",
+      "size": 478937088,
+      "sha256": "ca65d1c32430acd84e9126c2e48f3b4110cd649a592712bfb570a6650e7e19e7",
+      "format": "qcow2",
+      "verified_by": "OpenPGP-signed checksum file, key EE6DB7B98F5BF5EDD9DA0DE5DEE5C11CC2A1E572",
+      "checksum_url": "https://repo.almalinux.org/almalinux/10/cloud/aarch64/images/CHECKSUM",
+      "signature_url": "https://repo.almalinux.org/almalinux/10/cloud/aarch64/images/CHECKSUM.asc",
+      "boot": {
+        "root": "PARTUUID=f20c32a0-d1a4-40b8-99af-a011d3b20d59",
+        "rootfstype": "xfs",
+        "rootflags": ""
+      },
+      "cloud_init": true,
+      "cloud_user": "gvm",
+      "image_default_user": "almalinux",
+      "own_kernel_restricted_dma": false,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 2048,
+        "disk_gib": 20
+      },
+      "status": "untested-on-device",
+      "notes": "SELinux enforcing; xfs root."
+    },
+    {
+      "id": "rocky-10.2-cloud",
+      "name": "Rocky Linux 10.2 (GenericCloud)",
+      "version": "10.2",
+      "mode": "cloud-direct",
+      "url": "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2",
+      "size": 469368832,
+      "sha256": "457c8375e19496f43a25c4a6169fa11237536c53cef6f85a20ea3c5a751aa0f5",
+      "format": "qcow2",
+      "verified_by": "OpenPGP-signed checksum file, key FC226859C0860BF0DDB95B085B106C736FEDFC85",
+      "checksum_url": "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2.CHECKSUM",
+      "signature_url": "https://dl.rockylinux.org/pub/rocky/10/images/aarch64/Rocky-10-GenericCloud-Base-10.2-20260525.0.aarch64.qcow2.CHECKSUM.asc",
+      "boot": {
+        "root": "PARTUUID=5b1ff19f-1a24-471b-95d7-c66646d5bed8",
+        "rootfstype": "xfs",
+        "rootflags": ""
+      },
+      "cloud_init": true,
+      "cloud_user": "gvm",
+      "image_default_user": "rocky",
+      "own_kernel_restricted_dma": false,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 2048,
+        "disk_gib": 20
+      },
+      "status": "untested-on-device",
+      "notes": "SELinux enforcing; xfs root."
+    },
+    {
+      "id": "ubuntu-26.04-iso",
+      "name": "Ubuntu 26.04.1 LTS Server installer",
+      "version": "26.04.1 LTS",
+      "mode": "iso-uefi",
+      "url": "https://cdimage.ubuntu.com/releases/26.04.1/release/ubuntu-26.04.1-live-server-arm64.iso",
+      "size": 3076861952,
+      "sha256": "af78753c94b924c85c4964c670692a853f7c80299a4064e317edad95462e3168",
+      "format": "iso",
+      "verified_by": "OpenPGP-signed SHA256SUMS, key 843938DF228D22F7B3742BC0D94AA3F0EFE21092",
+      "checksum_url": "https://cdimage.ubuntu.com/releases/26.04.1/release/SHA256SUMS",
+      "signature_url": "https://cdimage.ubuntu.com/releases/26.04.1/release/SHA256SUMS.gpg",
+      "kernel": "7.0.0-30.30",
+      "own_kernel_restricted_dma": true,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 4096,
+        "disk_gib": 32,
+        "display": "2d"
+      },
+      "status": "untested-on-device",
+      "notes": "Kernel 7.0.0-30.30 has CONFIG_DMA_RESTRICTED_POOL. Text installer on the serial console or the 2D window; it installs the shim fallback loader, which this firmware needs (no stored boot entries)."
+    },
+    {
+      "id": "ubuntu-26.10-iso",
+      "name": "Ubuntu 26.10 Server installer",
+      "version": "26.10",
+      "mode": "iso-uefi",
+      "url": "https://cdimage.ubuntu.com/releases/26.10/release/ubuntu-26.10-live-server-arm64.iso",
+      "size": 3075813376,
+      "sha256": "45fec674fbce001b46447747a6d36964de3d2da2a5fbe2ece111b72dd769b4de",
+      "format": "iso",
+      "verified_by": "OpenPGP-signed SHA256SUMS, key 843938DF228D22F7B3742BC0D94AA3F0EFE21092",
+      "checksum_url": "https://cdimage.ubuntu.com/releases/26.10/release/SHA256SUMS",
+      "signature_url": "https://cdimage.ubuntu.com/releases/26.10/release/SHA256SUMS.gpg",
+      "kernel": "7.3.0-9.9",
+      "own_kernel_restricted_dma": true,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 4096,
+        "disk_gib": 32,
+        "display": "2d"
+      },
+      "status": "untested-on-device",
+      "notes": "Kernel 7.3.0-9.9 has CONFIG_DMA_RESTRICTED_POOL. Interim release."
+    },
+    {
+      "id": "nixos-26.05-iso",
+      "name": "NixOS 26.05 minimal installer",
+      "version": "26.05.12400.da6dc0e7b260",
+      "mode": "iso-uefi",
+      "url": "https://releases.nixos.org/nixos/26.05/nixos-26.05.12400.da6dc0e7b260/nixos-minimal-26.05.12400.da6dc0e7b260-aarch64-linux.iso",
+      "size": 1820721152,
+      "sha256": "b49392078b23616b79e1c1c7c840195837473151fa46d15e4b6ea49ce5aaf78f",
+      "format": "iso",
+      "verified_by": "sha256 file over https (NixOS publishes no signature)",
+      "checksum_url": "https://releases.nixos.org/nixos/26.05/nixos-26.05.12400.da6dc0e7b260/nixos-minimal-26.05.12400.da6dc0e7b260-aarch64-linux.iso.sha256",
+      "signature_url": null,
+      "kernel": "6.18.57",
+      "own_kernel_restricted_dma": true,
+      "recommended": {
+        "cpus": 4,
+        "memory_mib": 4096,
+        "disk_gib": 32,
+        "display": "2d"
+      },
+      "status": "untested-on-device",
+      "notes": "Default boot entry (Linux LTS) has CONFIG_DMA_RESTRICTED_POOL. NixOS publishes no signature: the sha256 is from its https checksum file. Install the boot loader with boot.loader.efi.canTouchEfiVariables = false (removable path)."
+    }
+  ]
+}

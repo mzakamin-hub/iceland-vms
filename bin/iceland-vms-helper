@@ -1,0 +1,9 @@
+#!/usr/bin/python3 -I
+# Root helper of iceland-vms (pkexec, polkit action org.iceland.vms.manage). Narrow verbs only:
+# start|shutdown|stop|force-off ID, stop-all, net-down, unload (supervise: internal, systemd only).
+import sys
+
+sys.path.insert(0, "/usr/share/iceland-vms/lib")
+from iceland_vms.helper import main  # noqa: E402
+
+sys.exit(main(sys.argv[1:]))

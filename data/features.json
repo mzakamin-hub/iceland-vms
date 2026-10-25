@@ -1,0 +1,17 @@
+{
+  "direct_kernel": true,
+  "network_nat": true,
+  "gpu2d": true,
+  "uefi": true,
+  "gpu3d_virgl": true,
+  "gpu3d_native": false,
+  "simplefb": true,
+  "gpu3d_venus": true,
+  "sound": false,
+  "qemu_backend": false,
+  "max_running": 1,
+  "min_battery_percent": 20,
+  "stop_battery_percent": 8,
+  "max_start_temp_c": 85,
+  "max_proven_memory_mib": 4096
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.iceland.VirtualMachines</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-2.0-only</project_license>
+  <name>Virtual Machines</name>
+  <summary>Protected virtual machines on the Gunyah hypervisor</summary>
+  <description>
+    <p>Create, run and manage virtual machines on Snapdragon devices whose hypervisor is Qualcomm Gunyah
+    (no KVM), with crosvm protected VMs: a catalogue of verified guest images, ISO installs through UEFI,
+    disks, shared folders, NAT networking with port forwards, a serial console and offline snapshots.</p>
+  </description>
+  <launchable type="desktop-id">org.iceland.VirtualMachines.desktop</launchable>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1" date="2026-10-23"/>
+  </releases>
+</component>

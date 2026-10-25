@@ -1,0 +1,19 @@
+# privacy-scan allow-list (read by .github/scripts/privacy-scan.py).
+#   value <string>        a known-safe value, allowed in every file (exact match, case-insensitive)
+#   skip <rule|*> <glob>  do not apply a rule to matching paths (rules: mac ipv4 email key nm name blob)
+# Only generic, documented values belong here. Never add a value that belongs to one device or one person's
+# network (serial numbers, MAC / Bluetooth addresses, network names): fix the file instead.
+#
+# Licence and notice texts carry their authors' published addresses.
+skip email *Notice-*.txt
+skip email *NOTICE*
+skip email *LICENSE*
+skip email *COPYING*
+#
+# The VMs' NAT network chosen by gvm.sh / the app (host side of the tap gvmtap0), not a real network.
+value 10.250.0.1
+value 10.250.0.0
+# Locally administered example MAC of the unit tests and of gvm.sh's default guest NICs (0a:1c = "GVM"), not a device address.
+value 0a:1c:00:00:00:01
+value 0a:1c:47:56:4d:01
+value 0a:1c:47:56:4d:02

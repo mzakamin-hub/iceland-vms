@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Virtual Machines (autostart)
+Exec=iceland-vms --autostart
+Icon=org.iceland.VirtualMachines
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

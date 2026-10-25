@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>iceland project</vendor>
+  <action id="org.iceland.vms.manage">
+    <description>Manage virtual machines</description>
+    <message>Starting or stopping a virtual machine needs administrator rights (it lends memory to the hypervisor)</message>
+    <icon_name>org.iceland.VirtualMachines</icon_name>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/iceland-vms/iceland-vms-helper</annotate>
+  </action>
+</policyconfig>

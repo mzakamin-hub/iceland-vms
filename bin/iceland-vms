@@ -1,0 +1,8 @@
+#!/usr/bin/python3 -s
+# Virtual Machines (iceland-vms): GTK4 / libadwaita front end. Runs as the user, never as root.
+import sys
+
+sys.path.insert(0, "/usr/share/iceland-vms/lib")
+from iceland_vms.ui.app import main  # noqa: E402
+
+sys.exit(main())

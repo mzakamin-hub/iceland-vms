@@ -1,0 +1,13 @@
+[Unit]
+Description=iceland-vms guest agent (clean shutdown over virtio console hvc0, desktop flags)
+After=local-fs.target
+Before=display-manager.service
+
+[Service]
+ExecStartPre=-/usr/local/sbin/gvm-agent --setup
+ExecStart=/usr/local/sbin/gvm-agent
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
