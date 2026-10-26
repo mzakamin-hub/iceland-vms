@@ -25,6 +25,7 @@ DEFAULT_FEATURES = {
     "qemu_gl": False,           # virgl GL on QEMU (virtio-gpu-gl-pci, egl-headless / gtk gl=on): on in features.json since 0.2-19
     "memory_shared": True,      # 0.2-18: shared (pseudo-unprotected) memory mode, PV-A-1..7 PASS 26 Oct (pvm53, q90u)
     "memory_shared_3d": True,   # 0.2-20: 3D OpenGL (virgl) in the shared mode, gvm 0.3-57 PV-B-3 PASS 26 Oct (glmark2 1634)
+    "memory_shared_vulkan": True,   # 0.2-22: 3D Vulkan (venus) + zink in the shared mode, kit-vm21 S rows PASS 26 Oct
     "max_running": 1,           # one VM at a time (Gunyah RM / memory)
     "min_battery_percent": 20,  # refuse a start below this when not charging
     "stop_battery_percent": 8,  # running VMs are shut down below this when not charging

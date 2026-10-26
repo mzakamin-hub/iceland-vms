@@ -52,11 +52,19 @@ MEMORY_MODES = ("protected", "shared")
 # (glmark2 without sudo); gvm 0.3-57's corrected PV-B-3 ran virgl GL in the shared mode on crosvm 0.3-55 (glmark2
 # 1634, render node present, every blob released) -> 3D OpenGL (virgl) is allowed with Shared (feature
 # memory_shared_3d); Vulkan (venus / zink) and the native context have not run in that mode and stay refused
+# 0.2-21: Vulkan (venus, and zink = GL over venus) uses the same runtime blob path (GuestAccept) as virgl's host-visible
+# blobs, which PV-B-7 proved in the shared mode (every blob released and reclaimed): allowed there behind the feature
+# memory_shared_vulkan (0.2-22: on - kit-vm21 S-1..S-8 PASS: Venus on the Adreno 840, VKBLOBTEST through
+# host-visible memory, glmark2 1850; zink over venus drew its renderer, S-7z). The native context does not run in any mode (guest Mesa
+# never creates its screen, V4 B / NCTX rows) and stays refused with Shared.
 GPU_3D = ("virgl", "native", "venus", "zink")
 SHARED_3D_OK = ("virgl",)
-SHARED_3D_BLOCKED = tuple(g for g in GPU_3D if g not in SHARED_3D_OK)
-SHARED_3D_REASON = ("3D Vulkan and the native context are not available with the shared memory mode yet: "
-                    "use 3D OpenGL, the software display or no display, or the Protected memory mode")
+SHARED_VULKAN = ("venus", "zink")
+SHARED_3D_BLOCKED = ("native",)
+SHARED_3D_REASON = ("The native context is not available with the shared memory mode: use 3D OpenGL or 3D Vulkan, "
+                    "the software display or no display, or the Protected memory mode")
+SHARED_VULKAN_REASON = ("3D Vulkan with the shared memory mode is not enabled on this tablet (feature "
+                        "memory_shared_vulkan): use 3D OpenGL, the software display or the Protected memory mode")
 SHARED_3D_FEATURE_REASON = ("3D graphics with the shared memory mode is not enabled on this tablet "
                             "(feature memory_shared_3d): use the software display or the Protected memory mode")
 NET_MODES = ("off", "nat")
@@ -182,6 +190,9 @@ def default_config(vmid, name):
         # vm-run v8) stays the fallback
         "display": {"gpu": "venus", "width": 1600, "height": 1000, "dpi": 0,
                     "keyboard": True, "mouse": True, "touch": False,
+                    # 0.2-22: keyboard grab - the compositor's shortcuts (Super, Alt+Tab) go to the VM while its
+                    # window has the focus (crosvm keyboard-shortcuts-inhibit, iceland-gvm >= 0.3-58); opt-in
+                    "keyboard_grab": False,
                     # Xorg glamor in the guest: ON again since 0.2-4 (vm-run v10d). It was off from 0.1-10 because
                     # texture uploads through virgl staging reached the host as zeros (black GL desktops); the
                     # guest kernel of iceland-gvm 0.3-23 syncs those buffers through the swiotlb.
@@ -212,8 +223,10 @@ def default_config(vmid, name):
         "cloud_init": {"enabled": False, "user": "gvm", "seed": "seed.img"},
         "guest_tools": True,            # 9p share with our guest kernel modules (+ gunyah_guest.ko)
         # 0.2-12: Windows guests: the account the app's clean shutdown logs in with over ssh (key only: the guest's
-        # OpenSSH accepts the app's key or the user's own ~/.ssh key; NO password is ever stored)
-        "windows": {"ssh_user": "gvm"},
+        # OpenSSH accepts the app's key or the user's own ~/.ssh key; NO password is ever stored). 0.2-21: power_key =
+        # a virtio keyboard (crosvm) the app presses KEY_POWER on when Shut Down cannot reach the guest over ssh;
+        # 0.2-22: off by default - Windows ignores it (vioinput sends Consumer Control "Power", kit-vm21 WP-5)
+        "windows": {"ssh_user": "gvm", "power_key": False},
         "usb": [],                      # qemu backend only: [{"vendor": "0781", "product": "5581"}]
         "autostart": False,
         "notes": "",
@@ -355,6 +368,8 @@ def validate(cfg, features=None):
     _int(dsp, "dpi", *LIMITS["dpi"], where="display.")
     for k in ("keyboard", "mouse", "touch", "glamor", "autologin"):
         _bool(dsp, k, "display.")
+    if "keyboard_grab" in dsp:
+        _bool(dsp, "keyboard_grab", "display.")
     if dsp.get("session") not in ("wayland", "x11"):
         raise ConfigError("display.session must be wayland or x11")
     if dsp.get("input_mode") not in INPUT_MODES:
@@ -406,6 +421,8 @@ def validate(cfg, features=None):
     if not isinstance(w, dict):
         raise ConfigError("windows must be an object")
     _str(w, "ssh_user", re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$"), "windows.")
+    if "power_key" in w:
+        _bool(w, "power_key", "windows.")
     if is_windows(cfg) and (b["mode"] != "uefi" or b["firmware"] != "ecam"):
         raise ConfigError("a Windows VM boots through the ECAM UEFI firmware (boot.mode uefi, boot.firmware ecam)")
 
@@ -435,6 +452,8 @@ def validate(cfg, features=None):
             raise ConfigError("the shared memory mode is not enabled yet (feature memory_shared not proven on this tablet)")
         if cfg["memory_mode"] == "shared" and dsp["gpu"] in GPU_3D and not features.get("memory_shared_3d"):
             raise ConfigError(SHARED_3D_FEATURE_REASON)
+        if cfg["memory_mode"] == "shared" and dsp["gpu"] in SHARED_VULKAN and not features.get("memory_shared_vulkan"):
+            raise ConfigError(SHARED_VULKAN_REASON)
         rb = resolve_backend(cfg, features)
         if cfg.get("usb") and rb != "qemu":
             raise ConfigError("USB passthrough needs the QEMU-Gunyah backend, which is not enabled on this tablet")
@@ -468,7 +487,8 @@ def load(path):
     if isinstance(raw, dict) and raw.get("mem_defaults_rev", 0) < MEM_DEFAULTS_REV:
         cfg["hugepages"], cfg["mem_defaults_rev"] = True, MEM_DEFAULTS_REV
     # 0.2-19: a VM saved by 0.2-18 with the shared memory mode AND a 3D display gets the software display; 0.2-20:
-    # only for the 3D modes still refused there (Vulkan / native); 3D OpenGL stays. Everything else stays as it was
+    # only for the 3D modes still refused there (Vulkan / native); 3D OpenGL stays. Everything else stays as it was.
+    # 0.2-21: only the native context (Vulkan is a feature-gated choice now, refused at start when the feature is off)
     if cfg.get("memory_mode") == "shared" and isinstance(d, dict) and d.get("gpu") in SHARED_3D_BLOCKED:
         d["gpu"], d["glamor"] = "simplefb", False
     return cfg

@@ -257,8 +257,9 @@ class SettingsPage(Gtk.Box):
         g.add(self.gpu)
         # 0.2-19: no 3D with the shared memory mode: the display falls back to the software display, with the reason;
         # 0.2-20: 3D OpenGL is allowed there (feature memory_shared_3d), Vulkan / native still fall back
-        self.shared_gpu_note = util.info_row("Software display: shared memory has no 3D Vulkan / native context yet",
-                                             config.SHARED_3D_REASON if f.get("memory_shared_3d")
+        self.shared_gpu_note = util.info_row("Software display: this 3D mode is not available with shared memory",
+                                             (config.SHARED_3D_REASON if f.get("memory_shared_vulkan")
+                                              else config.SHARED_VULKAN_REASON) if f.get("memory_shared_3d")
                                              else config.SHARED_3D_FEATURE_REASON, "dialog-information-symbolic")
         self.shared_gpu_note.set_visible(False)
         g.add(self.shared_gpu_note)
@@ -269,6 +270,10 @@ class SettingsPage(Gtk.Box):
         self.dpi = util.spin_row("DPI (0 = default)", "Larger text in the guest on the tablet's dense screen", 0, 600, 10,
                                  c["display"]["dpi"])
         self.kbd = Adw.SwitchRow(title="Keyboard in the window", active=c["display"]["keyboard"])
+        self.kgrab = Adw.SwitchRow(title="Send shortcuts to the VM",
+                                   subtitle="Super, Alt+Tab and other desktop shortcuts go to the guest while its window "
+                                            "has the focus (the desktop may ask once; its own escape shortcut ends it)",
+                                   active=c["display"].get("keyboard_grab", False))
         self.mouse = Adw.SwitchRow(title="Mouse and touch in the window",
                                    subtitle="Mouse and touch on the window reach the guest", active=c["display"]["mouse"])
         self.inmode = util.combo_row("Touch input", [
@@ -300,7 +305,7 @@ class SettingsPage(Gtk.Box):
                                       1 if c["display"].get("session", "x11") == "wayland" else 0)
         self.session.set_subtitle("Wayland starts labwc with a terminal instead of the Xorg desktop (needs labwc "
                                   "in the guest; the display manager is bypassed for that boot)")
-        for w in (self.width, self.height, self.dpi, self.kbd, self.mouse, self.inmode, self.fullscreen, self.fsnative,
+        for w in (self.width, self.height, self.dpi, self.kbd, self.kgrab, self.mouse, self.inmode, self.fullscreen, self.fsnative,
                   self.output, self.autologin, self.session, self.glamor):
             g.add(w)
         p.add(g)
@@ -668,7 +673,8 @@ class SettingsPage(Gtk.Box):
         if not hasattr(self, "gpu") or not hasattr(self, "memmode"):
             return                                  # called while the pages are still being built
         shared = util.combo_key(self.memmode) == "shared"
-        refused = config.SHARED_3D_BLOCKED if self.feats.get("memory_shared_3d") else config.GPU_3D
+        refused = (config.SHARED_3D_BLOCKED + (() if self.feats.get("memory_shared_vulkan") else config.SHARED_VULKAN)
+                   if self.feats.get("memory_shared_3d") else config.GPU_3D)
         if shared and util.combo_key(self.gpu) in refused:
             util.combo_set(self.gpu, "simplefb")
             self.shared_gpu_note.set_visible(True)
@@ -704,6 +710,7 @@ class SettingsPage(Gtk.Box):
         d["gpu"] = util.combo_key(self.gpu)
         d["width"], d["height"], d["dpi"] = int(self.width.get_value()), int(self.height.get_value()), int(self.dpi.get_value())
         d["keyboard"], d["mouse"] = self.kbd.get_active(), self.mouse.get_active()
+        d["keyboard_grab"] = self.kgrab.get_active() and d["keyboard"]
         d["autologin"], d["glamor"] = self.autologin.get_active(), self.glamor.get_active()
         d["session"] = util.combo_key(self.session)
         d["input_mode"] = util.combo_key(self.inmode)

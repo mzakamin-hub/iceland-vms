@@ -21,3 +21,7 @@ value 0a:1c:47:56:4d:02
 value 10.250.0.85
 value 0a:1c:00:00:00:02
 value 0a:1c:71:f1:61:73
+#
+# Addresses of the Windows shut-down unit tests: an example guest (10.0.0.2) and one in the app's NAT range.
+value 10.0.0.2
+value 10.250.0.9

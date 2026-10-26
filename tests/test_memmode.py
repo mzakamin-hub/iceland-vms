@@ -112,13 +112,30 @@ class Shared3D(unittest.TestCase):
     """0.2-19 refused every 3D display with the shared memory mode; 0.2-20 allows 3D OpenGL (virgl, gvm 0.3-57
     PV-B-3: glmark2 1634) behind the feature memory_shared_3d, Vulkan / native stay refused."""
 
-    def test_vulkan_native_refused(self):
+    def test_native_refused(self):
         for gpu in config.SHARED_3D_BLOCKED:
             c = fedora_cfg()
             c["memory_mode"] = "shared"
             c["display"]["gpu"] = gpu
             self.assertRaises(config.ConfigError, config.validate, c)
-        self.assertEqual(set(config.SHARED_3D_BLOCKED), {"native", "venus", "zink"})
+        self.assertEqual(set(config.SHARED_3D_BLOCKED), {"native"})
+
+    def test_vulkan_needs_its_feature(self):
+        """0.2-21: venus / zink with Shared behind memory_shared_vulkan; 0.2-22: on (kit-vm21 S rows PASS)."""
+        self.assertTrue(host.DEFAULT_FEATURES["memory_shared_vulkan"])
+        for gpu in config.SHARED_VULKAN:
+            c = fedora_cfg()
+            c["memory_mode"] = "shared"
+            c["display"]["gpu"] = gpu
+            config.validate(c)                                       # saving is allowed
+            with self.assertRaises(config.ConfigError) as cm:
+                config.validate(c, dict(FEATS, memory_shared=True, memory_shared_3d=True))
+            self.assertIn("memory_shared_vulkan", str(cm.exception))
+            config.validate(c, dict(FEATS, memory_shared=True, memory_shared_3d=True, memory_shared_vulkan=True))
+            a, _ = crosvmargs.build(c, RES)
+            self.assertIn("--protected-vm-pseudo-unprotected", a)
+            self.assertTrue(any("context-types=virgl:virgl2:venus," in x for x in a))
+            self.assertIn("--gpu-render-server", a)
 
     def test_virgl_allowed_with_feature(self):
         c = fedora_cfg()
@@ -161,9 +178,14 @@ class Shared3D(unittest.TestCase):
                 json.dump(c, f)
             return config.load(p)
 
-    def test_saved_shared_venus_loads_as_software_display(self):
-        got = self._load("venus")
+    def test_saved_shared_native_loads_as_software_display(self):
+        got = self._load("native")
         self.assertEqual(got["display"]["gpu"], "simplefb")
+        config.validate(got)
+
+    def test_saved_shared_venus_kept(self):
+        got = self._load("venus")                                    # 0.2-21: refused at start without the feature
+        self.assertEqual(got["display"]["gpu"], "venus")
         config.validate(got)
 
     def test_saved_shared_virgl_kept(self):

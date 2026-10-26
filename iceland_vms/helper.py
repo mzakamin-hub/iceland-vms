@@ -4,7 +4,7 @@ org.iceland.vms.manage). The GUI itself never runs as root.
 Verbs (the calling user is PKEXEC_UID; a user can only act on their own VMs):
   start ID       guards, load the Gunyah modules, NAT tap, then a transient systemd unit
                  iceland-vm-u<UID>-<ID>.service that runs "supervise"
-  shutdown ID    ask the guest to power off (crosvm powerbtn)
+  shutdown ID    ask the guest to power off (Linux: the guest agent; Windows: ssh, else the power key)
   stop ID        stop the unit (crosvm stop, then SIGKILL after 15 s) = force off
   net-down       remove the NAT connection (only when no VM runs)
   unload         unload the Gunyah modules: a no-op until q90o (pm-notifier bug; /etc/iceland-vms/allow-unload)
@@ -449,19 +449,83 @@ def wayland_socket(uid):
                       "log in first or set display to none" % (uid, rd))
 
 
+# ---- Windows guests: ssh identities, the one-time app-key install, the power key (0.2-21, WA-7) --------------
+# OpenSSH's client adds its default identities (~/.ssh/id_*) ONLY when no -i is given: 0.2-12..0.2-20 passed the app's
+# key with -i and so never offered the owner's key, which is the one the Windows image was built with (the image's
+# administrators_authorized_keys = the owner's tablet key, win-image-build.ps1 -SshPubKey). The final run's WA-7 failed
+# with "Permission denied (publickey)" on every attempt for exactly this reason (gvm.sh's W4-3 shutdown, which runs ssh
+# without -i, powered the same image off).
+OWNER_KEYS = ("id_ed25519", "id_ecdsa", "id_ed25519_sk", "id_ecdsa_sk", "id_rsa")
+WIN_KEY_OK = "ICELAND-VMS-KEY-OK"
+KEY_POWER, EV_KEY, EV_SYN = 116, 1, 0
+
+
+def win_identities(home, app_key):
+    """(app key or None, [the owner's default private keys that exist]) - the order ssh offers them in."""
+    app = app_key if app_key and os.path.isfile(app_key) else None
+    own = [p for p in (os.path.join(home, ".ssh", n) for n in OWNER_KEYS) if os.path.isfile(p)]
+    return app, own
+
+
+def win_ssh_argv(identities, user, ip, known_hosts, cmd):
+    """ssh argv offering exactly identities (IdentitiesOnly: the order is ours, no agent keys)."""
+    argv = ["ssh", "-o", "BatchMode=yes", "-o", "PasswordAuthentication=no", "-o", "ConnectTimeout=5",
+            "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + known_hosts, "-o", "LogLevel=ERROR",
+            "-o", "IdentitiesOnly=yes"]
+    for k in identities:
+        argv += ["-i", k]
+    return argv + ["%s@%s" % (user, ip), cmd]
+
+
+def win_key_install_cmd(pubkey):
+    """One PowerShell command (run over ssh with the owner's key) that adds the app's public key to
+    C:\\ProgramData\\ssh\\administrators_authorized_keys if missing, restores the ACL OpenSSH requires
+    (Administrators + SYSTEM only) and sets the power button to "Shut down" (the app's fallback presses it)."""
+    import base64
+    lines = [ln.strip() for ln in pubkey.strip().splitlines() if ln.strip()]
+    key = lines[0] if lines else ""
+    if not key.startswith(("ssh-ed25519 ", "ecdsa-sha2-", "ssh-rsa ", "sk-")) or "'" in key or len(lines) != 1:
+        raise HelperError("not a single OpenSSH public key")
+    ps = ("$ErrorActionPreference='Stop'; $f='C:\\ProgramData\\ssh\\administrators_authorized_keys'; $k='%s'; "
+          "$c=''; if (Test-Path $f) { $c=[IO.File]::ReadAllText($f) }; "
+          "if (-not $c.Contains($k)) { if ($c.Length -gt 0 -and -not $c.EndsWith([string][char]10)) "
+          "{ $c+=[string][char]13+[char]10 }; [IO.File]::WriteAllText($f, $c+$k+[string][char]13+[char]10) }; "
+          "icacls $f /inheritance:r /grant '*S-1-5-32-544:F' /grant 'SYSTEM:F' | Out-Null; "
+          "powercfg /setacvalueindex SCHEME_CURRENT SUB_BUTTONS PBUTTONACTION 3; "
+          "powercfg /setdcvalueindex SCHEME_CURRENT SUB_BUTTONS PBUTTONACTION 3; powercfg /setactive SCHEME_CURRENT; "
+          "'%s'" % (key, WIN_KEY_OK))
+    return "powershell -NoProfile -NonInteractive -EncodedCommand " + base64.b64encode(ps.encode("utf-16-le")).decode()
+
+
+def virtio_key_tap(code=KEY_POWER):
+    """virtio_input_event records (le16 type, le16 code, le32 value) for one key press + release, as crosvm's
+    --input keyboard[path=] socket reads them."""
+    import struct
+
+    def ev(t, c, v):
+        return struct.pack("<HHi", t, c, v)
+    return ev(EV_KEY, code, 1) + ev(EV_SYN, 0, 0) + ev(EV_KEY, code, 0) + ev(EV_SYN, 0, 0)
+
+
 class WinAgent:
     """0.2-12: the clean-shutdown "agent" of a Windows guest (no virtio-console driver in Windows).
 
     alive = the guest's OpenSSH answers on port 22 of its DHCP address (polled in a thread); "poweroff" runs
-    ssh <windows.ssh_user>@<ip> shutdown /s /t 0 AS THE VM's OWNER (never root), key only (BatchMode): the app's
-    key and the owner's own ~/.ssh keys are offered, no password exists anywhere. Windows then powers off
-    through PSCI SYSTEM_OFF and crosvm exits (vm-run W4-3).
+    ssh <windows.ssh_user>@<ip> shutdown /s /t 0 AS THE VM's OWNER (never root), key only (BatchMode). Windows then
+    powers off through PSCI SYSTEM_OFF and crosvm exits (vm-run W4-3).
+    0.2-21 (WA-7): the app's key AND the owner's default keys are offered (-i for each; before, -i disabled the default
+    keys); the first time ssh answers, the app installs its own key in the guest with the owner's key (once, logged),
+    so later shutdowns need only the app's key (kit-vm21 win: W-1..W-5 PASS). If ssh is refused or does not answer,
+    the user is told at once to shut Windows down inside it or Force Off; the virtio-keyboard power key
+    (windows.power_key) is opt-in and experimental: Windows ignored it in kit-vm21 winpk (WP-5).
     """
     path = None
     GRACE = 120                    # Windows may install updates on the way down
 
     def __init__(self, sup):
         self.sup, self.alive, self.stop = sup, False, False
+        self.pk = None                 # our end of the power-key socket (set by the supervisor on crosvm)
+        self.provisioned = False
         self.t = threading.Thread(target=self.loop, daemon=True)
         self.t.start()
 
@@ -481,38 +545,125 @@ class WinAgent:
             if ok != self.alive:
                 self.alive = ok
                 self.sup.log("windows: ssh on %s %s" % (ip, "answers" if ok else "does not answer"))
+                if ok and not self.provisioned:
+                    self.provisioned = True
+                    threading.Thread(target=self.provision, name="win-key", daemon=True).start()
+            self.drain()
             for _ in range(10):
                 if self.stop:
                     break
                 time.sleep(0.5)
 
+    # -- ssh as the VM's owner -----------------------------------------------------------------------------------
+    def keys(self):
+        pw = self.sup.pw
+        return win_identities(pw.pw_dir, os.path.join(config.data_home(pw.pw_dir), "ssh", "id_ed25519"))
+
+    def ssh(self, identities, cmd, timeout=60):
+        pw = self.sup.pw
+        kh = os.path.join(config.vm_dir(pw.pw_dir, self.sup.vmid), "known_hosts")
+        argv = win_ssh_argv(identities, self.sup.cfg["windows"]["ssh_user"], self.ip(), kh, cmd)
+        env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name, "PATH": "/usr/bin:/bin"}
+        try:
+            r = subprocess.run(argv, user=pw.pw_uid, group=pw.pw_gid, extra_groups=[], cwd=pw.pw_dir, env=env,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                               start_new_session=True, close_fds=True)
+            return r.returncode, (r.stdout or ""), (r.stderr or "").strip().replace(chr(10), " ")[:200]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return -1, "", str(e)[:200]
+
+    def provision(self):
+        """Once per start, when ssh first answers: make the app's own key work (install it with the owner's key)."""
+        app, own = self.keys()
+        if not app and not own:
+            self.sup.log("windows: no ssh key (neither the app's nor ~/.ssh/id_*): Shut Down will press the power key")
+            return
+        for attempt in range(1, 4):        # a fresh image's OpenSSH task may still be writing its key file
+            if self.stop or not self.alive:
+                return
+            rc, err = -1, "no app key"
+            if app:
+                rc, _, err = self.ssh([app], "exit", 30)
+                if rc == 0:
+                    self.sup.log("windows: the app's ssh key is accepted")
+                    return
+            if app and own:
+                try:
+                    with open(app + ".pub") as f:
+                        cmd = win_key_install_cmd(f.read())
+                except (OSError, HelperError) as e:
+                    self.sup.log("windows: cannot read the app's public key (%s); the owner's key stays in use" % e)
+                    return
+                rc, out, err = self.ssh(own, cmd, 90)
+                if rc == 0 and WIN_KEY_OK in out:
+                    self.sup.log("windows: installed the app's ssh key in the guest with the owner's key "
+                                 "(administrators_authorized_keys; power button = shut down)")
+                    rc2, _, err2 = self.ssh([app], "exit", 30)
+                    self.sup.log("windows: the app's ssh key is %s" % ("accepted now" if rc2 == 0 else
+                                                                       "still refused: %s" % err2))
+                    return
+                self.sup.log("windows: key install attempt %d with the owner's key failed (rc %d): %s"
+                             % (attempt, rc, err or out.strip()[-120:] or "-"))
+            else:
+                self.sup.log("windows: the app's key is refused (rc %d: %s) and there is no owner key to install it"
+                             % (rc, err or "-"))
+                return
+            time.sleep(20)
+
+    # -- the power key (crosvm virtio keyboard) --------------------------------------------------------------------
+    def drain(self):
+        """Read and drop the LED / status events crosvm writes back on the power-key socket."""
+        if not self.pk:
+            return
+        try:
+            while self.pk.recv(4096, socket.MSG_DONTWAIT):
+                pass
+        except OSError:
+            pass
+
+    FORCE_PROMPT = "Windows did not accept the shutdown (%s): shut it down inside Windows, or use Force Off"
+
+    def power_key(self, why):
+        """The clean shutdown failed. kit-vm21 winpk: Windows ignores the virtio keyboard's KEY_POWER (vioinput sends
+        it as Consumer Control 0x30 "Power", which Windows' power policy does not act on - only the System Control
+        "System Power Down" usage would), so the key is opt-in (windows.power_key) and the user is told at once to
+        Force Off; a system stop / sleep hook forces the VM off at once instead of waiting out the grace time."""
+        pressed = False
+        if self.pk:
+            try:
+                self.pk.sendall(virtio_key_tap())
+                pressed = True
+                self.sup.log("windows: %s: pressed the VM's power key (KEY_POWER, experimental)" % why)
+            except OSError as e:
+                self.sup.log("windows: %s; the power key failed (%s)" % (why, e))
+        self.sup.log("windows: %s; shut it down inside Windows or use Force Off" % why)
+        try:
+            self.sup.set_state(self.sup.state.get("state", "running"), self.FORCE_PROMPT % why)
+        except (OSError, AttributeError, TypeError):
+            pass
+        if getattr(self.sup, "term", False):
+            self.sup.force_at = time.time()          # stop / sleep hook: no 120 s grace for a refused shutdown
+        return pressed
+
     def send(self, cmd):
         if cmd == "ping":
-            return self.alive
-        if cmd != "poweroff" or not self.alive:
+            return self.alive or bool(self.pk)
+        if cmd != "poweroff":
             return False
-        ip, pw = self.ip(), self.sup.pw
-        key = os.path.join(config.data_home(pw.pw_dir), "ssh", "id_ed25519")
-        kh = os.path.join(config.vm_dir(pw.pw_dir, self.sup.vmid), "known_hosts")
-        argv = ["ssh", "-o", "BatchMode=yes", "-o", "PasswordAuthentication=no", "-o", "ConnectTimeout=5",
-                "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + kh, "-o", "LogLevel=ERROR"]
-        if os.path.exists(key):
-            argv += ["-i", key]                  # in addition to the owner's default ~/.ssh identities
-        argv += ["%s@%s" % (self.sup.cfg["windows"]["ssh_user"], ip), "shutdown /s /t 0"]
-        env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name, "PATH": "/usr/bin:/bin"}
+        if not self.alive:
+            self.power_key("ssh does not answer")
+            return bool(self.pk)
+        ip = self.ip()
+        app, own = self.keys()
+        ids = ([app] if app else []) + own
 
         def run():
             # 0.2-15 (fix run WA-7: "asked" was logged but Windows never powered off): wait for ssh's answer and
-            # log it; retry for 2 min while it fails (right after the first boot the OpenSSH task may still be
-            # installing the key), stop as soon as the guest is gone
+            # log it; retry while it fails (right after the first boot the OpenSSH task may still be installing the
+            # key), stop as soon as the guest is gone. 0.2-21: two refusals of every key -> the power key
+            denied = 0
             for attempt in range(1, 9):
-                try:
-                    r = subprocess.run(argv, user=pw.pw_uid, group=pw.pw_gid, extra_groups=[], cwd=pw.pw_dir, env=env,
-                                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
-                                       start_new_session=True, close_fds=True)
-                    rc, err = r.returncode, (r.stderr or r.stdout or "").strip().replace(chr(10), " ")[:200]
-                except (OSError, subprocess.TimeoutExpired) as e:
-                    rc, err = -1, str(e)[:200]
+                rc, out, err = self.ssh(ids, "shutdown /s /t 0") if ids else (-1, "", "no ssh key")
                 # Windows may drop the connection while it starts shutting down: 0 and 255 after a reset both count
                 if rc == 0 or (rc == 255 and "closed" in err.lower()):
                     self.sup.log("windows: shutdown /s accepted (ssh rc %d, attempt %d)" % (rc, attempt))
@@ -526,22 +677,32 @@ class WinAgent:
                         time.sleep(5)
                     if accepted >= 3:
                         self.sup.log("windows: still running 90 s after 3 accepted shutdown requests")
+                        self.power_key("shutdown /s did not power off")
                         return
                     self.sup.log("windows: still running 90 s after shutdown /s: asking again")
                     continue
-                self.sup.log("windows: ssh shutdown attempt %d failed (rc %d): %s" % (attempt, rc, err or "-"))
-                if self.stop:
+                self.sup.log("windows: ssh shutdown attempt %d failed (rc %d, %d key(s) offered): %s"
+                             % (attempt, rc, len(ids), err or "-"))
+                if self.stop or not self.alive:
                     return
-                time.sleep(15)
-            self.sup.log("windows: the guest did not accept shutdown over ssh: shut it down inside Windows or use Force Off")
+                if not ids or "Permission denied" in err:
+                    denied += 1
+                    if denied >= 2 or not ids:
+                        self.power_key("the guest refused every ssh key")
+                        return
+                time.sleep(10)
+            self.power_key("the guest did not accept shutdown over ssh")
 
         threading.Thread(target=run, name="win-shutdown", daemon=True).start()
-        self.sup.log("windows: asked the guest to shut down (ssh %s@%s)" % (self.sup.cfg["windows"]["ssh_user"], ip))
+        self.sup.log("windows: asked the guest to shut down (ssh %s@%s, %d key(s))"
+                     % (self.sup.cfg["windows"]["ssh_user"], ip, len(ids)))
         return True
 
     def close(self):
         self.stop = True
         self.t.join(6)
+        if self.pk:
+            self.pk.close()
 
 
 class Agent:
@@ -789,7 +950,12 @@ class Supervisor:
         p = os.path.join(self.rdir, "crosvm.log")
         try:
             with open(p, "rb") as f:
-                f.seek(getattr(self, "_log_off", 0))
+                if not hasattr(self, "_log_off"):
+                    # 0.2-22 (kit-vm21 Q-1): the log is appended across starts; an earlier start's
+                    # "connection to compositor has been broken" must not mark this start's window lost
+                    f.seek(0, os.SEEK_END)              # normally set by run() before the first boot
+                    self._log_off = f.tell()
+                f.seek(self._log_off)
                 new = f.read().decode("utf-8", "replace")
                 self._log_off = f.tell()
         except OSError:
@@ -804,7 +970,8 @@ class Supervisor:
                 self.log("display window close ignored: no guest agent")
                 self.set_state(self.state["state"], "Closing the window does not stop this VM (no guest agent): "
                                "use Shut Down or Force Off")
-        if self.cfg["display"]["gpu"] != "none" and any(m in new for m in self.DISPLAY_LOST) and not self.state.get("display_lost"):
+        if self.cfg["display"]["gpu"] != "none" and not self.cfg["display"].get("vnc") and \
+                any(m in new for m in self.DISPLAY_LOST) and not self.state.get("display_lost"):
             self.state["display_lost"] = True
             self.log("display window lost: " + next(m for m in self.DISPLAY_LOST if m in new))
             self.set_state(self.state["state"], "The display window was lost (the guest keeps running): "
@@ -893,6 +1060,12 @@ class Supervisor:
             return 1
         if config.is_windows(self.cfg):
             self.agent = WinAgent(self)          # clean shutdown over the guest's OpenSSH; no virtio-console
+            if self.backend != "qemu" and self.cfg["windows"].get("power_key", False):
+                # 0.2-21: a virtio keyboard whose only job is the power key (fallback of Shut Down without ssh);
+                # crosvm reads virtio_input_event records from its end of the socket pair
+                ours, theirs = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+                self.agent.pk, self._pk_peer = ours, theirs
+                self.res["power_key"] = self.fdpath(theirs.fileno())
         else:
             self.agent = Agent(self.rdir, self.log)
             self.res["agent_sock"] = self.agent.path
@@ -910,6 +1083,7 @@ class Supervisor:
         e["CROSVM_GVM_WINDOW_TITLE"] = "%s - Virtual Machines" % self.cfg["name"]
         e["CROSVM_GVM_APP_ID"] = "org.iceland.VirtualMachines"
         clog = open(os.path.join(self.rdir, "crosvm.log"), "ab", buffering=0)
+        self._log_off = os.fstat(clog.fileno()).st_size     # display_watch: only this start's lines (0.2-22)
         os.fchown(clog.fileno(), 0, self.gid)
         os.fchmod(clog.fileno(), 0o640)
         rc, boots = 0, 0

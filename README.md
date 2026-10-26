@@ -10,7 +10,7 @@ hypervisor). crosvm, the guest kernel and the command-line tool come from the co
 from [iceland-linux](https://github.com/mzakamin-hub/iceland-linux). QEMU with the Gunyah accelerator
 (`iceland-qemu-gunyah`, sources in [`qemu-gunyah/`](qemu-gunyah/)) is an optional second backend.
 
-App id: `org.iceland.VirtualMachines`. Current version: **0.2-20** (with iceland-gvm 0.3-55 and iceland-qemu-gunyah 10.0.2-1).
+App id: `org.iceland.VirtualMachines`. Current version: **0.2-22** (with iceland-gvm 0.3-58 and iceland-qemu-gunyah 10.0.2-1).
 
 ## What works
 
@@ -44,10 +44,10 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-20** (with iceland
   "Shared with the tablet". The VM still runs under Gunyah, but its RAM is shared with the tablet instead of lent:
   a small boot shim accepts the memory and starts the kernel, so there is no I/O bounce buffer and devices reach
   guest memory directly. **The tablet can read and change all of that VM's memory** (the app shows this warning
-  whenever the mode is selected); Protected stays the default for every VM. It works with 3D OpenGL (virgl; glmark2
-  1799 at 1280x800), the software display or without a display; Vulkan (venus / zink) and the native context are
-  refused in this mode. It is not uniformly faster - measured on the tablet against the same VM in the protected
-  mode:
+  whenever the mode is selected); Protected stays the default for every VM. 3D works in this mode: OpenGL (virgl)
+  and Vulkan (venus, and OpenGL through zink on Vulkan), with Vulkan on by default (glmark2 about 1820 at 1280x800);
+  the software display and headless VMs work too. It is not uniformly faster - measured on the tablet against the
+  same VM in the protected mode:
 
   | | shared | protected | |
   |---|---|---|---|
@@ -56,20 +56,26 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-20** (with iceland
   | network guest -> host | 4494 MB/s | 2611 MB/s | +72 % |
   | network host -> guest | 1484 MB/s | 1940 MB/s | -23 % |
 - **Windows 11 (arm64)**: import a prepared image, start it, connect with the Remote Desktop button (KRDC, Remmina
-  or FreeRDP to the guest's address) and reach the guest over ssh (the image's OpenSSH server). Shut Windows down
-  from inside Windows, or use Force Off; the app's clean Shut Down follows in a later release.
+  or FreeRDP to the guest's address) and reach the guest over ssh (the image's OpenSSH server). **Shut Down** in
+  the app shuts Windows down cleanly: the first time, the app installs its own ssh key in the guest with your
+  default ssh key (the one the image accepts); then it runs `shutdown /s` over ssh and the VM is off in about 7 s.
+  If Windows refuses ssh, the app says so at once and offers Force Off.
+- **Send shortcuts to the VM** (Settings > Display, off by default): while the VM window has the keyboard focus,
+  Alt+Tab, Escape and similar desktop shortcuts reach the guest. The Super key is still kept by the desktop.
 - **Console, files and guards**: an interactive serial console and logs; offline snapshots (reflink copies), clone,
   delete; one VM at a time; no start on low battery without a charger or when the tablet is hot; a memory reserve for
   the host; every VM stops before the tablet suspends.
 
 ## Requirements and install
 
-kernel-iceland q90u or newer with the Gunyah modules (q90v is current; vhost-net needs q90s or newer, older kernels
-fall back to crosvm's own network) and iceland-gvm 0.3-55. iceland-qemu-gunyah 10.0.2-1 is needed only for the
+kernel-iceland q90u or newer with the Gunyah modules (q90w2 is current; vhost-net needs q90s or newer, older kernels
+fall back to crosvm's own network) and iceland-gvm 0.3-58 with its virglrenderer 1.3.0-1.iceland1 (from the
+[iceland-gvm 0.3-58 release](https://github.com/mzakamin-hub/iceland-gvm/releases/tag/0.3-58)). iceland-qemu-gunyah 10.0.2-1 is needed only for the
 QEMU-Gunyah backend.
 
 ```bash
-sudo dnf install ./iceland-gvm-0.3-55.fc44.aarch64.rpm ./iceland-vms-0.2-20.fc44.noarch.rpm
+sudo dnf install ./iceland-gvm-0.3-58.fc44.aarch64.rpm ./virglrenderer-1.3.0-1.iceland1.fc44.aarch64.rpm \
+                 ./iceland-vms-0.2-22.fc44.noarch.rpm
 sudo dnf install ./iceland-qemu-gunyah-10.0.2-1.fc44.aarch64.rpm    # optional: the QEMU-Gunyah backend
 ```
 

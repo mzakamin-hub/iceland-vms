@@ -2,7 +2,7 @@
 # Built from a source tarball of this repository plus fw/out (the edk2-gunyah build, see fw/BUILD.md) on Fedora 44.
 Name:           iceland-vms
 Version:        0.2
-Release:        20%{?dist}
+Release:        22%{?dist}
 Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm, QEMU-Gunyah)
 License:        GPL-2.0-only AND BSD-2-Clause-Patent
 BuildArch:      noarch
@@ -44,6 +44,34 @@ make install DESTDIR=%{buildroot} PREFIX=/usr FW=fw/out
 /usr/share/doc/iceland-vms
 
 %changelog
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-22
+- 3D Vulkan (venus) and zink with the shared memory mode ON by default (feature memory_shared_vulkan): kit-vm21
+  S-1..S-8 PASS on q90w2 (Venus on the Adreno 840, VKBLOBTEST through host-visible memory, glmark2 1850; zink over
+  venus: "zink Vulkan 1.4 (Virtio-GPU Venus (Adreno (TM) 840))")
+- Windows: Shut Down over ssh proven (kit-vm21 W-1..W-5: key installed with the owner's key, powered off in 7 s).
+  When ssh refuses or does not answer, the app says at once to shut Windows down inside it or Force Off; a
+  system stop / sleep forces the VM off at once. The virtio-keyboard power key is now opt-in (windows.power_key,
+  off): Windows ignored it (WP-5; vioinput sends Consumer Control "Power", not System Power Down)
+- keyboard grab (Settings > Display > Send shortcuts to the VM, display.keyboard_grab, off by default): the
+  compositor's shortcuts (Super, Alt+Tab) reach the guest while its window has the focus; needs iceland-gvm >= 0.3-58
+- the "display window was lost" note is no longer raised by an earlier start's log lines or for a VNC display
+  (kit-vm21 Q-1)
+
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-21
+- Windows: the clean Shut Down works with the image's key. OpenSSH adds the default ~/.ssh keys only when no -i is
+  given, so 0.2-12..0.2-20 offered only the app's key, which a Windows image built with the owner's tablet key
+  refused ("Permission denied (publickey)", WA-7). The app now offers its own key and the owner's ~/.ssh/id_* keys
+  explicitly, and the first time the guest's ssh answers it installs its own key in the guest with the owner's key
+  (administrators_authorized_keys, ACL Administrators + SYSTEM; the power button action is set to "Shut down")
+- Windows: a power-key fallback. crosvm VMs of Windows get a virtio keyboard (windows.power_key, on) on which the app
+  presses KEY_POWER when ssh does not answer or refuses every key, before the user has to Force Off
+- 3D Vulkan (venus) and zink with the shared memory mode behind the feature memory_shared_vulkan (off until the
+  kit-vm21 S rows pass): they use the runtime blob path virgl's host-visible blobs already proved in that mode.
+  The native context stays refused with Shared; a VM saved with Shared + Vulkan keeps its display and is refused at
+  start while the feature is off
+- needs virglrenderer >= 1.3.0-1.iceland1 for the venus fixes (shm fd leak, render-server memcpy, proxy lock,
+  heap percentage); not a hard requirement (Fedora's 1.3.0 still works)
+
 * Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-20
 - 3D OpenGL (virgl) is available with the shared memory mode again (feature memory_shared_3d, on): the 0.2-19 block
   came from a test fault; the corrected run (iceland-gvm 0.3-57 PV-B-3) drew virgl GL in that mode on crosvm 0.3-55,

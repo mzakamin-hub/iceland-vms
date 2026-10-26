@@ -74,6 +74,8 @@ def gpu_args(cfg, wayland_sock, feats, vnc_pwfile=None):
         args += ["--wayland-sock", wayland_sock]
     if d["keyboard"]:
         args.append("--display-window-keyboard")
+        if d.get("keyboard_grab") and wayland_sock:  # 0.2-22: the window asks the compositor for its shortcuts
+            env["CROSVM_GVM_KBD_GRAB"] = "1"
     if d["mouse"] or d.get("vnc"):      # VNC: the pointer device (crosvm adds the absolute tablet)
         args.append("--display-window-mouse")
     return args + vnc_arg(cfg, vnc_pwfile), env
@@ -92,6 +94,7 @@ def build(cfg, res, feats=None):
       tap                            tap name or None
       wayland_sock                   path or None
       cpu_sets                       host.cpu_sets()
+      power_key                      path of crosvm's end of the power-key socket (Windows) or None
     """
     feats = feats or {}
     shared = cfg.get("memory_mode") == "shared"
@@ -127,6 +130,8 @@ def build(cfg, res, feats=None):
                                                  ",vhost-net" if cfg["network"].get("vhost_net") else "")]
     g, env = gpu_args(cfg, res.get("wayland_sock"), feats, res.get("vnc_password_file"))
     a += g
+    if res.get("power_key"):         # 0.2-21: Windows Shut Down fallback (the supervisor holds the other end)
+        a += ["--input", "keyboard[path=%s]" % res["power_key"]]
     if cfg["sound"]["mode"] in ("null", "file"):
         a += ["--virtio-snd", "backend=%s" % cfg["sound"]["mode"]]
     if cfg["boot"]["mode"] == "direct":
