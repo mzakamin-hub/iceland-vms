@@ -43,7 +43,7 @@ GPU_ITEMS = [("venus", "3D: OpenGL (virgl) + Vulkan (venus) - recommended"),
              ("none", "None (serial console only)"), ("2d", "2D window (virtio-gpu)"),
              ("virgl", "3D: OpenGL only (virgl)"),
              ("zink", "3D: Vulkan (venus), OpenGL through zink (experimental, DroidVM-style)"),
-             ("native", "3D: msm native context (experimental, falls back to llvmpipe)")]
+             ("native", "3D: msm native context (experimental: Fedora guests, guest Mesa from iceland-vms-guest-mesa)")]
 GPU_FEATURE = {"virgl": "gpu3d_virgl", "native": "gpu3d_native", "venus": "gpu3d_venus", "zink": "gpu3d_venus",
                "simplefb": "simplefb"}
 
@@ -271,8 +271,9 @@ class SettingsPage(Gtk.Box):
                                  c["display"]["dpi"])
         self.kbd = Adw.SwitchRow(title="Keyboard in the window", active=c["display"]["keyboard"])
         self.kgrab = Adw.SwitchRow(title="Send shortcuts to the VM",
-                                   subtitle="Super, Alt+Tab and other desktop shortcuts go to the guest while its window "
-                                            "has the focus (the desktop may ask once; its own escape shortcut ends it)",
+                                   subtitle="Super, Alt+Tab, Escape and other desktop shortcuts go to the guest while its "
+                                            "window has the focus (crosvm VMs; the desktop may ask once; its own escape "
+                                            "shortcut ends it)",
                                    active=c["display"].get("keyboard_grab", False))
         self.mouse = Adw.SwitchRow(title="Mouse and touch in the window",
                                    subtitle="Mouse and touch on the window reach the guest", active=c["display"]["mouse"])

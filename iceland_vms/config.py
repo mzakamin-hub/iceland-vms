@@ -25,6 +25,18 @@ FIRMWARE_DEBUG = os.path.join(SHARE_DIR, "firmware", "edk2-gunyah-debug.fd")
 FIRMWARE_ECAM = os.path.join(GVM_DIR, "firmware", "edk2-gunyah-ecam-release.fd")
 FIRMWARE_ECAM_DEBUG = os.path.join(GVM_DIR, "firmware", "edk2-gunyah-ecam-debug.fd")
 FIRMWARES = ("standard", "ecam")        # boot.firmware for UEFI VMs
+# 0.2-23: the guest Mesa for the msm native context (package iceland-vms-guest-mesa: Fedora 44's Mesa source built with
+# freedreno's virtio KMD, unpacked by the guest agent under /usr/lib64/iceland-nctx)
+GUEST_MESA_DIR = os.environ.get("IVMS_GUEST_MESA_DIR", os.path.join(SHARE_DIR, "guest-mesa"))
+
+
+def guest_mesa_tarball():
+    """Path of the newest nctx-mesa-*.tar.gz of iceland-vms-guest-mesa, or None."""
+    try:
+        names = sorted(n for n in os.listdir(GUEST_MESA_DIR) if n.startswith("nctx-mesa-") and n.endswith(".tar.gz"))
+    except OSError:
+        return None
+    return os.path.join(GUEST_MESA_DIR, names[-1]) if names else None
 WINDOWS_OS = "windows-11-arm64"         # cfg["os"] of an imported Windows image
 # disk I/O engine of crosvm's virtio-blk (DiskOption async-executor): io_uring won vm-run OPT v10m (2 MiB lends,
 # read 692 -> 3300 MB/s, write 701 -> 1300 MB/s); epoll stays selectable

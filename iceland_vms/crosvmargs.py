@@ -57,9 +57,13 @@ def gpu_args(cfg, wayland_sock, feats, vnc_pwfile=None):
     if mode == "2d":
         gpu = "backend=2d," + disp
     else:
-        # native = the DRM context ONLY: when capset 6 is offered, guest Mesa always takes the native path (V4 A/B 24 Oct)
+        # native: when capset 6 (drm) is offered, guest Mesa always takes the native path (V4 A/B 24 Oct). 0.2-23: virgl
+        # stays in the list too: with the drm context alone virglrenderer starts without vrend, so the guest's 2D console
+        # resources fail ("2D Texture size ... exceeds supported value (0)", kit-vm21/22 N rows) and the window stays
+        # black. The guest's GL / Vulkan need a Mesa with freedreno's virtio KMD (iceland-vms-guest-mesa, gvm-agent flag)
         # zink (parity step 3): the same device as venus; the guest runs its GL through zink over venus (gvm-agent flag)
-        ct = {"virgl": "virgl:virgl2", "native": "drm", "venus": "virgl:virgl2:venus", "zink": "virgl:virgl2:venus"}[mode]
+        ct = {"virgl": "virgl:virgl2", "native": "virgl:virgl2:drm", "venus": "virgl:virgl2:venus",
+              "zink": "virgl:virgl2:venus"}[mode]
         gpu = ("backend=virglrenderer,context-types=%s,egl=true,gles=true,surfaceless=true,"
                "fixed-blob-mapping=false,pci-bar-size=0x40000000,%s" % (ct, disp))
         env["CROSVM_GVM_ACCEPT"] = "1"           # runtime GuestAccept for blobs (iceland-gvm 0.2, V4)

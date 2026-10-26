@@ -125,7 +125,7 @@ class CrosvmArgsTests(unittest.TestCase):
         self.assertNotIn("-p", a)
         self.assertEqual(env, {"CROSVM_GVM_ACCEPT": "1", "FD_MESA_DEBUG": "noubwc,notile", "CROSVM_GVM_SCANOUT_READ": "ctx0",
                                "CROSVM_GVM_INPUT_MODE": "tablet"})
-        self.assertIn("context-types=drm,", " ".join(a))
+        self.assertIn("context-types=virgl:virgl2:drm,", " ".join(a))    # 0.2-23: vrend for the 2D console
         self.assertIn("dpi=[160,160]", " ".join(a))
 
     def test_affinity_and_shares(self):

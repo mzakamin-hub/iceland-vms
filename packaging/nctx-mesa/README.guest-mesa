@@ -1,0 +1,21 @@
+iceland-vms-guest-mesa: guest Mesa for the msm native context
+
+Why: Fedora's Mesa builds freedreno with the msm kernel-mode driver only. In a VM the GPU is a virtio_gpu
+device; Mesa's pipe loader sees the msm native-context capset and picks freedreno, but freedreno's
+fd_device_new() has no virtio backend in Fedora's build and returns NULL, so EGL falls back to llvmpipe.
+
+What: Mesa 26.2.5 (the version Fedora 44 ships; upstream tarball, Fedora has no patches for it) built with
+  -Dgallium-drivers=freedreno -Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm,virtio
+  -Dplatforms=x11,wayland -Dllvm=disabled --libdir=lib64/iceland-nctx
+Payload: nctx-mesa-26.2.5.tar.gz = /usr/lib64/iceland-nctx/ (libgallium, libEGL_mesa, libGLX_mesa, libgbm,
+gbm/dri_gbm.so, dri/*, libvulkan_freedreno.so, freedreno_icd.json, env.sh).
+
+Use: iceland-vms copies the tarball into the tools share of a VM whose display is "3D: msm native context";
+the guest agent (gvm-agent --setup) unpacks it and writes /etc/profile.d/iceland-nctx.sh,
+/etc/environment.d/60-iceland-nctx.conf and a lightdm xserver-command with
+  LD_LIBRARY_PATH=/usr/lib64/iceland-nctx LIBGL_DRIVERS_PATH=/usr/lib64/iceland-nctx/dri
+  GBM_BACKENDS_PATH=/usr/lib64/iceland-nctx/gbm VK_DRIVER_FILES=/usr/lib64/iceland-nctx/freedreno_icd.json
+By hand in a guest: . /usr/lib64/iceland-nctx/env.sh before starting a program.
+Fedora's Mesa in the guest stays installed and unchanged; in other display modes the agent removes the files.
+
+Build: build-cross.sh (cross-compiled on the PC against a Fedora 44 aarch64 root). Licence: Mesa's (license.rst).

@@ -10,7 +10,7 @@ hypervisor). crosvm, the guest kernel and the command-line tool come from the co
 from [iceland-linux](https://github.com/mzakamin-hub/iceland-linux). QEMU with the Gunyah accelerator
 (`iceland-qemu-gunyah`, sources in [`qemu-gunyah/`](qemu-gunyah/)) is an optional second backend.
 
-App id: `org.iceland.VirtualMachines`. Current version: **0.2-22** (with iceland-gvm 0.3-58 and iceland-qemu-gunyah 10.0.2-1).
+App id: `org.iceland.VirtualMachines`. Current version: **0.2-23** (with iceland-gvm 0.3-59 and iceland-qemu-gunyah 10.0.2-1).
 
 ## What works
 
@@ -19,6 +19,10 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-22** (with iceland
   the root partition itself (GPT / MBR, file-system magic, btrfs subvolume).
 - **3D graphics**: virgl (OpenGL) and venus (Vulkan) on the Adreno GPU are the default display, with a GPU-composited
   desktop in a window on the tablet's desktop.
+- **msm native context** (opt-in per VM, "3D: msm native context" in the app): the guest's own Mesa (freedreno for
+  OpenGL, turnip for Vulkan) draws directly on the Adreno 840 through virglrenderer's msm native context; glmark2
+  at 1280x800 scores about 2690 (virgl about 1770). The app delivers a matching guest Mesa
+  (`iceland-vms-guest-mesa`) into the VM; Fedora's Mesa in the guest is not changed.
 - **QEMU-Gunyah backend (optional)**: Settings > General > Backend; crosvm stays the default. With the
   `iceland-qemu-gunyah` package installed, a VM runs as a protected VM under QEMU 10.0.2 with the Gunyah accelerator,
   with 3D OpenGL (virgl) on the Adreno GPU in QEMU's window or over VNC, and starts and stops cleanly from the app.
@@ -61,7 +65,7 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-22** (with iceland
   default ssh key (the one the image accepts); then it runs `shutdown /s` over ssh and the VM is off in about 7 s.
   If Windows refuses ssh, the app says so at once and offers Force Off.
 - **Send shortcuts to the VM** (Settings > Display, off by default): while the VM window has the keyboard focus,
-  Alt+Tab, Escape and similar desktop shortcuts reach the guest. The Super key is still kept by the desktop.
+  Super, Alt+Tab, Escape and similar desktop shortcuts reach the guest (crosvm VMs).
 - **Console, files and guards**: an interactive serial console and logs; offline snapshots (reflink copies), clone,
   delete; one VM at a time; no start on low battery without a charger or when the tablet is hot; a memory reserve for
   the host; every VM stops before the tablet suspends.
@@ -69,13 +73,15 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-22** (with iceland
 ## Requirements and install
 
 kernel-iceland q90u or newer with the Gunyah modules (q90w2 is current; vhost-net needs q90s or newer, older kernels
-fall back to crosvm's own network) and iceland-gvm 0.3-58 with its virglrenderer 1.3.0-1.iceland1 (from the
-[iceland-gvm 0.3-58 release](https://github.com/mzakamin-hub/iceland-gvm/releases/tag/0.3-58)). iceland-qemu-gunyah 10.0.2-1 is needed only for the
+fall back to crosvm's own network) and iceland-gvm 0.3-59 with its virglrenderer 1.3.0-1.iceland1 (from the
+[iceland-gvm 0.3-59 release](https://github.com/mzakamin-hub/iceland-gvm/releases/tag/0.3-59)).
+iceland-vms-guest-mesa is needed only for the msm native context. iceland-qemu-gunyah 10.0.2-1 is needed only for the
 QEMU-Gunyah backend.
 
 ```bash
-sudo dnf install ./iceland-gvm-0.3-58.fc44.aarch64.rpm ./virglrenderer-1.3.0-1.iceland1.fc44.aarch64.rpm \
-                 ./iceland-vms-0.2-22.fc44.noarch.rpm
+sudo dnf install ./iceland-gvm-0.3-59.fc44.aarch64.rpm ./virglrenderer-1.3.0-1.iceland1.fc44.aarch64.rpm \
+                 ./iceland-vms-0.2-23.fc44.noarch.rpm
+sudo dnf install ./iceland-vms-guest-mesa-26.2.5-1.iceland1.fc44.aarch64.rpm   # optional: the msm native context
 sudo dnf install ./iceland-qemu-gunyah-10.0.2-1.fc44.aarch64.rpm    # optional: the QEMU-Gunyah backend
 ```
 
@@ -116,6 +122,8 @@ with `fw/out/` as `iceland-vms-0.2.tar.gz` (top directory `iceland-vms-0.2/`) an
 - `fw/BUILD.md`: how the edk2-gunyah UEFI firmware in the package is built.
 - `tests/`: unit tests (`make check`).
 - `packaging/iceland-vms.spec`.
+- `packaging/nctx-mesa/`: the guest Mesa for the msm native context (`iceland-vms-guest-mesa`): spec, build script,
+  Mesa's licence text; see its README.
 - `qemu-gunyah/`: the sources of the `iceland-qemu-gunyah` package (patches on QEMU v10.0.2, spec, configure line,
   licence texts); see its README.
 

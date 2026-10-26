@@ -896,9 +896,20 @@ class Supervisor:
         for flag, on in (("noglamor", not dsp.get("glamor", False)),
                          ("autologin", dsp["gpu"] != "none" and dsp.get("autologin", True)),
                          ("wayland", dsp["gpu"] in ("virgl", "venus", "native", "zink") and dsp.get("session", "x11") == "wayland"),
-                         ("zink", dsp["gpu"] == "zink")):
+                         ("zink", dsp["gpu"] == "zink"),
+                         ("native", dsp["gpu"] == "native")):
             if on:
                 open(os.path.join(d, flag), "w").close()
+        if dsp["gpu"] == "native":
+            # 0.2-23: Fedora's guest Mesa has freedreno without its virtio KMD, so the msm native context fell back to
+            # llvmpipe (kit-vm22 N2: fd_device_new() -> NULL). The guest agent unpacks this Mesa under
+            # /usr/lib64/iceland-nctx and points the desktop at it while the VM runs in this mode.
+            t = config.guest_mesa_tarball()
+            if t:
+                subprocess.run(["cp", t, d + "/"], check=False)
+            else:
+                self.log("native context: iceland-vms-guest-mesa is not installed; the guest's own Mesa will fall "
+                         "back to llvmpipe")
         return d
 
     def shares(self):

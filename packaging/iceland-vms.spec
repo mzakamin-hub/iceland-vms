@@ -2,17 +2,18 @@
 # Built from a source tarball of this repository plus fw/out (the edk2-gunyah build, see fw/BUILD.md) on Fedora 44.
 Name:           iceland-vms
 Version:        0.2
-Release:        22%{?dist}
+Release:        23%{?dist}
 Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm, QEMU-Gunyah)
 License:        GPL-2.0-only AND BSD-2-Clause-Patent
 BuildArch:      noarch
 Source0:        iceland-vms-%{version}.tar.gz
 BuildRequires:  make, python3
-Requires:       iceland-gvm >= 0.3-55
+Requires:       iceland-gvm >= 0.3-59
 Requires:       python3-gobject, gtk4, libadwaita
 Requires:       polkit, systemd, NetworkManager, firewalld
 Requires:       dosfstools, mtools, openssl, openssh-clients, xz, zstd, coreutils
 Recommends:     vte291-gtk4, qemu-img, iceland-qemu-gunyah >= 10.0.2-1
+Suggests:       iceland-vms-guest-mesa
 Suggests:       krdc, tigervnc
 
 %description
@@ -44,6 +45,17 @@ make install DESTDIR=%{buildroot} PREFIX=/usr FW=fw/out
 /usr/share/doc/iceland-vms
 
 %changelog
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-23
+- Send shortcuts to the VM: Super reaches the guest too (needs iceland-gvm >= 0.3-59, whose virtio keyboard
+  advertises KEY_LEFTMETA / KEY_RIGHTMETA; kit-vm22 K-3); the setting's subtitle names Super, Alt+Tab and Escape
+- msm native context (experimental, feature gpu3d_native, still off by default): crosvm gets context-types
+  virgl:virgl2:drm (with drm alone virglrenderer had no vrend, so the guest's 2D console resources failed:
+  "2D Texture size ... exceeds supported value (0)"); the VM's tools share carries the guest Mesa of
+  iceland-vms-guest-mesa (Fedora 44's Mesa 26.2.5 with freedreno's virtio KMD: Fedora builds freedreno with the msm
+  KMD only, so fd_device_new() refused the virtio_gpu device and GL fell back to llvmpipe, kit-vm22 N2 trace)
+- gvm-agent: the native flag unpacks that Mesa under /usr/lib64/iceland-nctx and points Xorg (lightdm), login shells
+  (profile.d) and systemd user sessions (environment.d) at it; a newer agent in the share replaces the installed one
+
 * Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-22
 - 3D Vulkan (venus) and zink with the shared memory mode ON by default (feature memory_shared_vulkan): kit-vm21
   S-1..S-8 PASS on q90w2 (Venus on the Adreno 840, VKBLOBTEST through host-visible memory, glmark2 1850; zink over

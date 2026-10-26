@@ -9,12 +9,22 @@
 #   noglamor   -> /etc/X11/xorg.conf.d/20-iceland-noglamor.conf (Xorg modesetting without glamor), else removed
 #   wayland    -> the autologin session is a Wayland one (labwc preferred) instead of Xorg
 #   zink       -> lightdm starts Xorg with MESA_LOADER_DRIVER_OVERRIDE=zink (+ profile.d for the session)
+#   native     -> the msm native context: the share's nctx-mesa-*.tar.gz (freedreno with the virtio KMD) is unpacked
+#                 under /usr/lib64/iceland-nctx and Xorg / profile.d / environment.d point GL, GBM and Vulkan at it
+# A newer gvm-agent in the share replaces the installed one first (0.2-23).
 #   autologin  -> autologin of the cloud-init user in lightdm / GDM (touch / the host OSK cannot type into a
 #                 greeter in the VM window), else our autologin drop-ins are removed
 if [ "${1:-}" = --setup ]; then
 	share=/mnt/gvmshare
 	mkdir -p "$share"
 	mountpoint -q "$share" || mount -t 9p -o trans=virtio,version=9p2000.L,ro gvmshare "$share" 2>/dev/null
+	# 0.2-23: the app's agent is newer than the installed one (new flags such as native): install it and run its setup
+	# (the app shares its tools dir itself as gvmshare: files at the share's top; gvm.sh shares a dir with tools/)
+	na=$(ls "$share/gvm-agent" "$share/tools/gvm-agent" 2>/dev/null | head -n1)
+	if [ -z "${GVM_AGENT_UPDATED:-}" ] && [ -n "$na" ] && ! cmp -s "$na" /usr/local/sbin/gvm-agent; then
+		install -m 755 "$na" /usr/local/sbin/gvm-agent && echo "gvm-agent: updated from the host"
+		GVM_AGENT_UPDATED=1 exec /usr/local/sbin/gvm-agent --setup
+	fi
 	user=$(awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /nologin|false/ {print $1; exit}' /etc/passwd)
 	x=/etc/X11/xorg.conf.d/20-iceland-noglamor.conf
 	if [ -f "$share/tools/noglamor" ]; then
@@ -32,6 +42,34 @@ if [ "${1:-}" = --setup ]; then
 		printf 'export MESA_LOADER_DRIVER_OVERRIDE=zink\n' > "$zp"
 	else
 		rm -f "$z" "$zp"
+	fi
+	# native: the msm native context needs a Mesa whose freedreno has the virtio KMD (Fedora's has msm only, so
+	# fd_device_new() refuses the virtio_gpu device and GL falls back to llvmpipe). The host's iceland-vms-guest-mesa
+	# puts nctx-mesa-*.tar.gz in the share; it is unpacked under /usr/lib64/iceland-nctx (Fedora's Mesa is untouched)
+	# and Xorg, the login shells and the systemd user sessions use it through the environment while the flag is set
+	nd=/usr/lib64/iceland-nctx
+	nl=/etc/lightdm/lightdm.conf.d/52-iceland-nctx.conf
+	np=/etc/profile.d/iceland-nctx.sh
+	ne=/etc/environment.d/60-iceland-nctx.conf
+	nf=$(ls "$share/native" "$share/tools/native" 2>/dev/null | head -n1)
+	nt=$(ls "$share"/nctx-mesa-*.tar.gz "$share"/tools/nctx-mesa-*.tar.gz 2>/dev/null | tail -n1)
+	if [ -n "$nf" ] && [ -n "$nt" ]; then
+		ns=$(sha256sum "$nt" | cut -d' ' -f1)
+		if [ "$(cat $nd/.sha256 2>/dev/null)" != "$ns" ]; then
+			rm -rf "$nd" && tar -xzf "$nt" -C / && echo "$ns" > "$nd/.sha256" && echo "gvm-agent: guest Mesa $(basename "$nt") unpacked"
+		fi
+		if [ -f "$nd/.sha256" ]; then
+			nv="LD_LIBRARY_PATH=$nd LIBGL_DRIVERS_PATH=$nd/dri GBM_BACKENDS_PATH=$nd/gbm VK_DRIVER_FILES=$nd/freedreno_icd.json"
+			mkdir -p /etc/environment.d
+			printf '%s\n' $nv > "$ne"
+			printf 'export %s\n' $nv > "$np"
+			if [ -d /etc/lightdm ]; then
+				mkdir -p /etc/lightdm/lightdm.conf.d
+				printf '[Seat:*]\nxserver-command=env %s X\n' "$nv" > "$nl"
+			fi
+		fi
+	else
+		rm -f "$nl" "$np" "$ne"
 	fi
 	l=/etc/lightdm/lightdm.conf.d/50-iceland-autologin.conf
 	g=/etc/gdm/custom.conf.d-iceland-autologin
