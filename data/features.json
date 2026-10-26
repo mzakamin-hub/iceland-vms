@@ -9,6 +9,7 @@
   "gpu3d_venus": true,
   "sound": false,
   "qemu_backend": false,
+  "qemu_gl": false,
   "max_running": 1,
   "min_battery_percent": 20,
   "stop_battery_percent": 8,

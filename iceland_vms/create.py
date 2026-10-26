@@ -4,7 +4,8 @@ The wizard runs this in a thread; tools/vm-create.py and the tablet test scripts
 so a scripted test exercises exactly the app's own create path.
 
 src = dict(kind="catalogue", entry=<catalogue entry>) | dict(kind="iso", path=...) |
-      dict(kind="image", path=...) | dict(kind="test")
+      dict(kind="image", path=...) | dict(kind="test") |
+      dict(kind="windows", path=<a set-up Windows 11 ARM64 raw disk>)   (0.2-12)
 v   = dict(name=..., cpus=..., mem=<MiB>, disk=<GiB>, net=<bool>, gpu="2d"|"none"|...)
 """
 import os
@@ -54,6 +55,22 @@ def create_vm(home, src, v, progress=None, dl_progress=None, cancel=None):
     os.makedirs(vd, mode=0o700)
     try:
         kind = src["kind"]
+        if kind == "windows":
+            # 0.2-12: import a prepared Windows 11 ARM64 disk (route A: DroidVM
+            # drivers, test signing, OpenSSH). The source file is never changed: the VM gets its own copy (a
+            # reflink on btrfs: instant and no extra space until the guest writes); the app never resets it.
+            config.windows_defaults(cfg)
+            cfg.update(cpus=v["cpus"], memory_mib=v["mem"])
+            cfg["network"]["mode"] = "nat" if v["net"] else "off"
+            if v.get("ssh_user"):
+                cfg["windows"]["ssh_user"] = v["ssh_user"]
+            if imageprobe.image_format(src["path"]) != "raw":
+                raise RuntimeError("a Windows image must be a raw disk (.raw / .img)")
+            progress("Copying the Windows disk", None, "%s (a reflink on btrfs)" % os.path.basename(src["path"]))
+            storage.import_image(src["path"], os.path.join(vd, "disk0.raw"))
+            cfg["disks"] = [{"store": "vm", "name": "disk0.raw", "kind": "disk", "ro": False}]
+            storage.save_vm(home, cfg)
+            return cfg
         if kind == "test":
             cfg["boot"]["initrd"] = True
             cfg["guest_tools"] = False
@@ -67,7 +84,7 @@ def create_vm(home, src, v, progress=None, dl_progress=None, cancel=None):
             progress("Creating the disk", None)
             storage.create_disk(os.path.join(vd, "disk0.raw"), v["disk"])
             cfg["boot"]["mode"] = "uefi"
-            if v["gpu"] in ("simplefb", "venus", "virgl", "native"):
+            if v["gpu"] in ("simplefb", "venus", "virgl", "native", "zink"):
                 # the firmware and the ISO installers draw through virtio-gpu (EFI GOP); the software display is
                 # for our direct-boot guests until a UEFI run proves it, and 3D needs our guest kernel (the
                 # swiotlb sync of 0.3-23): an installed distro kernel would show a black GL desktop

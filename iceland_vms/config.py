@@ -20,6 +20,15 @@ ETC_DIR = "/etc/iceland-vms"
 RUN_DIR = "/run/iceland-vms"
 FIRMWARE = os.path.join(SHARE_DIR, "firmware", "edk2-gunyah.fd")
 FIRMWARE_DEBUG = os.path.join(SHARE_DIR, "firmware", "edk2-gunyah-debug.fd")
+# 0.2-12 (Windows agent): the ACPI + PCI ECAM build of edk2-gunyah that boots Windows 11 ARM64 (gvm.sh win, vm-run
+# WIN v10l: desktop, input, network, RDP, 30 min soak). It ships with iceland-gvm; crosvm needs CROSVM_GVM_PCI_ECAM=1.
+FIRMWARE_ECAM = os.path.join(GVM_DIR, "firmware", "edk2-gunyah-ecam-release.fd")
+FIRMWARE_ECAM_DEBUG = os.path.join(GVM_DIR, "firmware", "edk2-gunyah-ecam-debug.fd")
+FIRMWARES = ("standard", "ecam")        # boot.firmware for UEFI VMs
+WINDOWS_OS = "windows-11-arm64"         # cfg["os"] of an imported Windows image
+# disk I/O engine of crosvm's virtio-blk (DiskOption async-executor): io_uring won vm-run OPT v10m (2 MiB lends,
+# read 692 -> 3300 MB/s, write 701 -> 1300 MB/s); epoll stays selectable
+DISK_ASYNC = ("uring", "epoll")
 QEMU_BIN = "/usr/libexec/iceland-qemu-gunyah/qemu-system-aarch64"
 
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,30}$")
@@ -35,8 +44,30 @@ CPUSET_RE = re.compile(r"^(\d{1,2}(-\d{1,2})?)(,\d{1,2}(-\d{1,2})?)*$")
 STORES = ("vm", "isos", "images")       # vm = the VM's own folder, isos / images = shared download folders
 DISK_KINDS = ("disk", "cdrom")
 BOOT_MODES = ("direct", "uefi")
+# 0.2-10 (step 4): "protected" = guest RAM lent to Gunyah, the host cannot read it (default);
+# "shared" = DroidVM-style pseudo-unprotected mode: RAM shared at run time and accepted by a boot shim,
+# THE HOST CAN READ AND WRITE ALL OF THE VM'S MEMORY. Opt-in per VM, crosvm only.
+MEMORY_MODES = ("protected", "shared")
 NET_MODES = ("off", "nat")
-GPU_MODES = ("none", "2d", "virgl", "native", "venus", "simplefb")   # native = msm DRM native context;
+# 0.2-10: RDP clients the app can start, in order of preference (KDE first), and their command lines
+RDP_CLIENTS = ("krdc", "remmina", "sdl-freerdp", "sdl-freerdp3", "xfreerdp", "xfreerdp3", "wlfreerdp")
+
+
+def rdp_client_argv(prog, ip):
+    if prog == "krdc":
+        return [prog, "rdp://%s" % ip]
+    if prog == "remmina":
+        return [prog, "-c", "rdp://%s" % ip]
+    return [prog, "/v:%s" % ip, "/dynamic-resolution", "/cert:tofu"]
+
+
+def is_windows(cfg):
+    """A Windows guest: the catalogue / import id starts with "windows" (e.g. windows-11-arm64)."""
+    return str(cfg.get("os", "")).lower().startswith("windows")
+
+
+INPUT_MODES = ("tablet", "touchpad", "touch")   # 0.2-6: crosvm CROSVM_GVM_INPUT_MODE
+GPU_MODES = ("none", "2d", "virgl", "native", "venus", "simplefb", "zink")   # native = msm DRM native context;
 # simplefb = DroidVM's default screen: a framebuffer in host-shared memory, guest simpledrm, crosvm --simplefb (0.2-1)
 SOUND_MODES = ("off", "null", "file")
 SHARE_KINDS = ("p9", "fs")
@@ -46,12 +77,15 @@ BACKENDS = ("auto", "crosvm", "qemu")     # auto: qemu only when USB passthrough
 LIMITS = {
     "cpus": (1, 8),
     "memory_mib": (256, 8192),
-    "swiotlb_mib": (64, 1024),
+    # 320: the guest kernel's restricted DMA pool keeps one 24-byte slot per 2 KiB in ONE kmalloc (4 MiB at most with
+    # 4 KiB pages, MAX_PAGE_ORDER 10): 512 MiB needs 6 MiB, the pool fails and the guest has no disk (vm-run OPT S5)
+    "swiotlb_mib": (64, 320),
     "disk_gib": (1, 512),
     "width": (640, 3840),
     "height": (480, 3000),
     "dpi": (0, 600),
     "port": (1, 65535),
+    "vnc_port": (5900, 5999),
     "disks": 6,
     "shares": 4,
     "forwards": 16,
@@ -111,7 +145,12 @@ def default_config(vmid, name):
         "cpu_set": "",                  # host CPUs for "custom", e.g. "0-5"
         "memory_mib": 2048,
         "swiotlb_mib": 128,
-        "hugepages": False,             # crosvm --hugepages (THP for guest RAM; large guests, experimental)
+        # 0.2-10: 2 MiB lends by default (crosvm --hugepages + shmem THP): with 4 KiB lends every guest page costs a
+        # TrustZone call and a Windows guest froze the host (vm-run WINN vs WINH, 25 Oct)
+        "hugepages": True,
+        "mem_defaults_rev": 1,
+        "disk_async": "uring",          # 0.2-12: io_uring for every disk (DISK_ASYNC)
+        "memory_mode": "protected",     # protected | shared (host can read the VM's memory; see MEMORY_MODES)
         "boot": {
             "mode": "direct",           # direct = our guest kernel; uefi = edk2-gunyah firmware
             "root": "",                 # direct: PARTUUID=... or /dev/vdaN
@@ -120,9 +159,13 @@ def default_config(vmid, name):
             "cmdline_extra": "",
             "initrd": False,            # direct: our test initramfs (busybox) instead of a disk root
             "firmware_debug": False,    # uefi: the DEBUG edk2-gunyah build (verbose serial log)
+            "firmware": "standard",     # uefi: standard = edk2-gunyah (Linux ISOs); ecam = ACPI + PCI ECAM (Windows)
         },
         "disks": [],                    # [{"store": "vm", "name": "disk0.raw", "kind": "disk", "ro": False}]
-        "network": {"mode": "nat", "mac": random_mac(), "forwards": []},
+        # vhost-net (in-kernel virtio-net datapath, host CONFIG_VHOST_NET=m since q90s): ON by default since 0.2-15
+        # (fix run V11 on q90u: guest -> host 2434 -> 3087 MB/s, host -> guest 1970 -> 4707 MB/s); a kernel without
+        # it falls back to crosvm's own network (helper); switchable in Settings > Network
+        "network": {"mode": "nat", "mac": random_mac(), "forwards": [], "vhost_net": True},
         # 0.2-4: 3D (virgl GL + venus Vulkan) with a GPU-composited desktop is the default (vm-run v10d: Xorg
         # glamor and weston GL drawn with the iceland-gvm 0.3-23 guest kernel); the software display (simplefb,
         # vm-run v8) stays the fallback
@@ -136,11 +179,30 @@ def default_config(vmid, name):
                     # 3D guests: Xorg (the session proven to draw, without glamor, vm-run v5); "wayland" autologins
                     # into labwc when the guest has it (not yet drawn: GL compositors stay black)
                     "session": "x11",
+                    # 0.2-6 (DroidVM parity): how the window's touch reaches the guest - "tablet" (tap = click,
+                    # long press = right click, two fingers scroll, drag = drag), "touchpad" (relative pointer like
+                    # a laptop touchpad) or "touch" (the guest's own multi-touch gestures)
+                    "input_mode": "tablet",
+                    "fullscreen": False,     # open the VM window fullscreen ...
+                    "output": "",            # ... on this monitor (connector name, e.g. "DP-1"; "" = any)
+                    # ... with the guest display at that monitor's resolution (set by the app before a start;
+                    # otherwise crosvm scales the VM's width x height to the screen)
+                    "fullscreen_native": True,
+                    # 0.2-7 (DroidVM parity): serve the display over VNC instead of the window (crosvm
+                    # --vnc-server / QEMU -vnc); vnc_lan listens on every address (needs a password, kept in
+                    # the VM folder as vnc-password, never in vm.json)
+                    "vnc": False,
+                    "vnc_lan": False,
+                    "vnc_port": 5900,
+                    "vnc_password": False,
                     "defaults_rev": 2},
         "sound": {"mode": "off"},
-        "shares": [],                   # [{"path": "/home/u/Public", "tag": "share0", "kind": "p9", "ro": True}]
+        "shares": [],                   # [{"path": "~/Public", "tag": "share0", "kind": "p9", "ro": True}]
         "cloud_init": {"enabled": False, "user": "gvm", "seed": "seed.img"},
         "guest_tools": True,            # 9p share with our guest kernel modules (+ gunyah_guest.ko)
+        # 0.2-12: Windows guests: the account the app's clean shutdown logs in with over ssh (key only: the guest's
+        # OpenSSH accepts the app's key or the user's own ~/.ssh key; NO password is ever stored)
+        "windows": {"ssh_user": "gvm"},
         "usb": [],                      # qemu backend only: [{"vendor": "0781", "product": "5581"}]
         "autostart": False,
         "notes": "",
@@ -217,6 +279,10 @@ def validate(cfg, features=None):
     _int(cfg, "memory_mib", *LIMITS["memory_mib"])
     _int(cfg, "swiotlb_mib", *LIMITS["swiotlb_mib"])
     _bool(cfg, "hugepages")
+    if cfg.get("disk_async") not in DISK_ASYNC:
+        raise ConfigError("disk_async must be one of %s" % (DISK_ASYNC,))
+    if cfg.get("memory_mode") not in MEMORY_MODES:
+        raise ConfigError("memory_mode must be one of %s" % (MEMORY_MODES,))
 
     b = cfg.get("boot")
     if not isinstance(b, dict) or b.get("mode") not in BOOT_MODES:
@@ -227,6 +293,8 @@ def validate(cfg, features=None):
     _str(b, "cmdline_extra", CMDLINE_RE, "boot.")
     _bool(b, "initrd", "boot.")
     _bool(b, "firmware_debug", "boot.")
+    if b.get("firmware") not in FIRMWARES:
+        raise ConfigError("boot.firmware must be one of %s" % (FIRMWARES,))
     if b["mode"] == "direct" and not b["initrd"] and not b["root"]:
         raise ConfigError("direct kernel boot needs a root device (use Detect in Boot settings)")
 
@@ -250,6 +318,7 @@ def validate(cfg, features=None):
     if not isinstance(n, dict) or n.get("mode") not in NET_MODES:
         raise ConfigError("network.mode must be one of %s" % (NET_MODES,))
     _str(n, "mac", MAC_RE, "network.", allow_empty=False)
+    _bool(n, "vhost_net", "network.")
     fw = n.get("forwards", [])
     if not isinstance(fw, list) or len(fw) > LIMITS["forwards"]:
         raise ConfigError("network.forwards: at most %d" % LIMITS["forwards"])
@@ -274,6 +343,20 @@ def validate(cfg, features=None):
         _bool(dsp, k, "display.")
     if dsp.get("session") not in ("wayland", "x11"):
         raise ConfigError("display.session must be wayland or x11")
+    if dsp.get("input_mode") not in INPUT_MODES:
+        raise ConfigError("display.input_mode must be one of %s" % (INPUT_MODES,))
+    _bool(dsp, "fullscreen", "display.")
+    _bool(dsp, "fullscreen_native", "display.")
+    for k in ("vnc", "vnc_lan", "vnc_password"):
+        _bool(dsp, k, "display.")
+    _int(dsp, "vnc_port", *LIMITS["vnc_port"], where="display.")
+    if dsp["vnc"] and dsp["gpu"] == "none":
+        raise ConfigError("the VNC display needs a display (not \"none\")")
+    if dsp["vnc"] and dsp["vnc_lan"] and not dsp["vnc_password"]:
+        raise ConfigError("a VNC display reachable from the network needs a password")
+    out = dsp.get("output")
+    if not isinstance(out, str) or len(out) > 63 or not all(ch.isalnum() or ch in "._:-" for ch in out):
+        raise ConfigError("display.output must be a monitor connector name like DP-1 (or empty)")
 
     s = cfg.get("sound")
     if not isinstance(s, dict) or s.get("mode") not in SOUND_MODES:
@@ -305,6 +388,12 @@ def validate(cfg, features=None):
     _str(ci, "seed", FILE_RE, "cloud_init.", allow_empty=False)
     _bool(cfg, "guest_tools")
     _bool(cfg, "autostart")
+    w = cfg.get("windows")
+    if not isinstance(w, dict):
+        raise ConfigError("windows must be an object")
+    _str(w, "ssh_user", re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,31}$"), "windows.")
+    if is_windows(cfg) and (b["mode"] != "uefi" or b["firmware"] != "ecam"):
+        raise ConfigError("a Windows VM boots through the ECAM UEFI firmware (boot.mode uefi, boot.firmware ecam)")
 
     usb = cfg.get("usb", [])
     if not isinstance(usb, list) or len(usb) > 8:
@@ -313,6 +402,8 @@ def validate(cfg, features=None):
         if not isinstance(u, dict) or not re.match(r"^[0-9a-f]{4}$", str(u.get("vendor", ""))) \
                 or not re.match(r"^[0-9a-f]{4}$", str(u.get("product", ""))):
             raise ConfigError("usb[%d] needs 4-digit hex vendor and product ids" % i)
+    if cfg["display"].get("vnc") and cfg["display"].get("vnc_lan") and cfg["backend"] == "qemu":
+        raise ConfigError("the QEMU backend serves VNC on this tablet only (127.0.0.1); use crosvm for a network VNC display")
     if usb and cfg["backend"] == "crosvm":
         raise ConfigError("USB passthrough needs the qemu-gunyah backend (crosvm cannot pass USB to protected VMs)")
     if not isinstance(cfg.get("notes", ""), str) or len(cfg.get("notes", "")) > 2000:
@@ -320,12 +411,14 @@ def validate(cfg, features=None):
 
     # feature gates (what has been proven on the tablet; /etc/iceland-vms/features.json)
     if features is not None:
-        need = {"virgl": "gpu3d_virgl", "native": "gpu3d_native", "venus": "gpu3d_venus",
+        need = {"virgl": "gpu3d_virgl", "native": "gpu3d_native", "venus": "gpu3d_venus", "zink": "gpu3d_venus",
                 "simplefb": "simplefb"}.get(dsp["gpu"])
         if need and not features.get(need):
             raise ConfigError("display %s is not enabled yet (feature %s not proven on this tablet)" % (dsp["gpu"], need))
         if b["mode"] == "uefi" and not features.get("uefi", True):
             raise ConfigError("UEFI boot is disabled on this tablet (feature uefi)")
+        if cfg["memory_mode"] == "shared" and not features.get("memory_shared"):
+            raise ConfigError("the shared memory mode is not enabled yet (feature memory_shared not proven on this tablet)")
         rb = resolve_backend(cfg, features)
         if cfg.get("usb") and rb != "qemu":
             raise ConfigError("USB passthrough needs the QEMU-Gunyah backend, which is not enabled on this tablet")
@@ -339,6 +432,7 @@ def validate(cfg, features=None):
 
 
 # ---- load / save (as the user) ------------------------------------------------------------
+MEM_DEFAULTS_REV = 1          # 1 (0.2-10): hugepages on
 DISPLAY_DEFAULTS_REV = 2      # 1 (0.1-10): glamor off + Xorg; 2 (0.2-4): glamor back on for 3D VMs (vm-run v10d)
 
 
@@ -352,8 +446,11 @@ def load(path):
         # once per VM (the user can switch back afterwards): a 3D VM gets the GPU-composited Xorg desktop
         # (glamor on, fixed by the 0.3-23 guest kernel); other displays keep glamor off. The display mode itself
         # (2D / 3D / software) is the user's choice and is not changed.
-        d["glamor"] = d.get("gpu") in ("virgl", "venus", "native")
+        d["glamor"] = d.get("gpu") in ("virgl", "venus", "native", "zink")
         d["session"], d["defaults_rev"] = "x11", DISPLAY_DEFAULTS_REV
+    # 0.2-10: once per VM, 2 MiB guest memory pages on (the hugepages default); the user can turn it off afterwards
+    if isinstance(raw, dict) and raw.get("mem_defaults_rev", 0) < MEM_DEFAULTS_REV:
+        cfg["hugepages"], cfg["mem_defaults_rev"] = True, MEM_DEFAULTS_REV
     return cfg
 
 
@@ -365,6 +462,75 @@ def save(cfg, path):
         json.dump(cfg, f, indent=2, sort_keys=True)
         f.write("\n")
     os.replace(tmp, path)
+
+
+def fullscreen_size(cfg, monitors):
+    """0.2-6: the guest display size for a fullscreen VM with fullscreen_native, or None.
+
+    monitors: [(connector, width_px, height_px)] of the host (the UI asks GDK). The configured output is used,
+    else the first monitor; the size is clamped to LIMITS (crosvm's window buffer = the guest's resolution, so
+    the fullscreen window shows it 1:1 instead of scaled)."""
+    d = cfg["display"]
+    if not d.get("fullscreen") or not d.get("fullscreen_native", True) or not monitors:
+        return None
+    m = next((x for x in monitors if x[0] == d.get("output")), None) if d.get("output") else None
+    m = m or monitors[0]
+    w = max(LIMITS["width"][0], min(LIMITS["width"][1], int(m[1])))
+    h = max(LIMITS["height"][0], min(LIMITS["height"][1], int(m[2])))
+    return w, h
+
+
+VNC_PASSWORD_FILE = "vnc-password"     # in the VM's folder, mode 0600
+
+
+def vnc_address(cfg):
+    """(host, port) a viewer on this tablet connects to, or None without VNC."""
+    d = cfg["display"]
+    if not d.get("vnc"):
+        return None
+    return "127.0.0.1", d.get("vnc_port", 5900)
+
+
+def vnc_viewer_argv(cfg, which):
+    """argv for a VNC viewer program ("krdc", "vncviewer", "remmina", "gvncviewer"), or None."""
+    a = vnc_address(cfg)
+    if not a:
+        return None
+    host, port = a
+    return {"krdc": ["krdc", "vnc://%s:%d" % (host, port)],
+            "vncviewer": ["vncviewer", "%s::%d" % (host, port)],
+            "remmina": ["remmina", "-c", "vnc://%s:%d" % (host, port)],
+            "gvncviewer": ["gvncviewer", "%s:%d" % (host, port - 5900)]}.get(which)
+
+
+def firmware_path(cfg):
+    """The UEFI firmware file of a VM (standard edk2-gunyah from this package, or the ECAM build from iceland-gvm)."""
+    b = cfg["boot"]
+    if b.get("firmware") == "ecam":
+        return FIRMWARE_ECAM_DEBUG if b["firmware_debug"] else FIRMWARE_ECAM
+    return FIRMWARE_DEBUG if b["firmware_debug"] else FIRMWARE
+
+
+# The MAC address gvm.sh win (the Windows setup / WIN rows) gives the VM: an image set up there knows its adapter by
+# it, so the app VM keeps it (a new MAC is a new adapter to Windows: new network profile, firewall scope, lease).
+WINDOWS_IMAGE_MAC = "0a:1c:47:56:4d:02"
+
+
+def windows_defaults(cfg):
+    """In place: the Windows 11 ARM64 settings proven by gvm.sh win (vm-run WIN, v10l): ECAM UEFI firmware, the
+    shared-framebuffer display (simplefb), 4 vCPU / 4 GiB, 2 MiB lends, swiotlb 256 MiB, NAT, io_uring disks; no
+    Linux guest tools, cloud-init or virtio-console agent (Windows has no driver for them)."""
+    cfg["os"] = WINDOWS_OS
+    cfg["boot"].update(mode="uefi", firmware="ecam", initrd=False, root="", rootfstype="", rootflags="")
+    # input "touch": the device set gvm.sh win proved (W4-1 / W4-2: no CROSVM_GVM_INPUT_MODE = touch screen + keyboard);
+    # tablet / touchpad add a virtio tablet + mouse that the Windows VirtioInput driver has not been tested with
+    cfg["display"].update(gpu="simplefb", width=1600, height=1000, glamor=False, autologin=False, input_mode="touch")
+    cfg.update(cpus=4, memory_mib=4096, swiotlb_mib=256, hugepages=True, disk_async="uring", guest_tools=False)
+    cfg["cloud_init"]["enabled"] = False
+    cfg["network"]["mode"] = "nat"
+    cfg["network"]["mac"] = WINDOWS_IMAGE_MAC       # 0.2-14 (release run WA-5): the adapter the image was set up with
+    cfg["sound"]["mode"] = "off"
+    return cfg
 
 
 def kernel_cmdline(cfg):
@@ -391,11 +557,16 @@ def kernel_cmdline(cfg):
 # qemu-gunyah evaluation (qemu/backend.json); everything False until that backend is enabled.
 BACKEND_CAPS = {
     "crosvm": {"usb": False, "gpu2d": True, "gpu3d": True, "simplefb": True, "wayland_window": True, "shares": True,
-               "agent": True, "uefi": True, "direct": True, "snapshots_offline": True},
+               "agent": True, "uefi": True, "direct": True, "snapshots_offline": True, "shared_memory": True},
     "qemu": {"usb": True, "gpu2d": True, "gpu3d": False, "simplefb": False, "wayland_window": True, "shares": True,
-             "agent": True, "uefi": True, "direct": True, "snapshots_offline": True},
+             "agent": True, "uefi": True, "direct": True, "snapshots_offline": True, "shared_memory": False},
 }
 BACKEND_LABEL = {"crosvm": "crosvm", "qemu": "QEMU-Gunyah"}
+
+
+MEMORY_SHARED_WARNING = ("The tablet (host) can read and change all of this VM's memory while it runs. "
+                         "Use it only for VMs you would also run unprotected on a PC. It removes the I/O bounce "
+                         "buffer and lets devices reach guest memory directly.")
 
 
 def resolve_backend(cfg, features=None):
@@ -414,7 +585,7 @@ def backend_conflicts(cfg, backend):
     out = []
     if cfg.get("usb") and not caps["usb"]:
         out.append("USB passthrough")
-    if cfg["display"]["gpu"] in ("virgl", "native", "venus") and not caps["gpu3d"]:
+    if cfg["display"]["gpu"] in ("virgl", "native", "venus", "zink") and not caps["gpu3d"]:
         out.append("3D graphics")
     if cfg["display"]["gpu"] == "simplefb" and not caps["simplefb"]:
         out.append("the shared-framebuffer software display")
@@ -422,4 +593,6 @@ def backend_conflicts(cfg, backend):
         out.append("the display window on this desktop")
     if cfg["shares"] and not caps["shares"]:
         out.append("shared folders")
+    if cfg.get("memory_mode") == "shared" and not caps.get("shared_memory"):
+        out.append("the shared (host-readable) memory mode")
     return out

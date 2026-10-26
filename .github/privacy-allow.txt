@@ -17,3 +17,7 @@ value 10.250.0.0
 value 0a:1c:00:00:00:01
 value 0a:1c:47:56:4d:01
 value 0a:1c:47:56:4d:02
+# Unit-test values in the same synthetic NAT (a lease in 10.250.0.0/24, MACs with the project prefix 0a:1c).
+value 10.250.0.85
+value 0a:1c:00:00:00:02
+value 0a:1c:71:f1:61:73

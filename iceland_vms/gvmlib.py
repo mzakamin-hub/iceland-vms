@@ -137,7 +137,9 @@ def net_down():
 
 
 def lease_ip(mac=None):
-    """Guest IPv4 from NetworkManager's dnsmasq lease file (newest lease, or the one for mac)."""
+    """Guest IPv4 from NetworkManager's dnsmasq lease file: the newest lease of mac, None while mac has none.
+    Without mac: the newest lease of any guest. 0.2-14: no fallback to another MAC's lease (release run WA-4 took
+    the stale lease of gvm.sh's Windows MAC at once and probed RDP on an address nobody had)."""
     try:
         with open(LEASES, encoding="ascii") as f:
             rows = [line.split() for line in f if line.strip()]
@@ -145,7 +147,7 @@ def lease_ip(mac=None):
         return None
     rows = [r for r in rows if len(r) >= 3]
     if mac:
-        rows = [r for r in rows if r[1].lower() == mac.lower()] or rows
+        rows = [r for r in rows if r[1].lower() == mac.lower()]
     rows.sort(key=lambda r: int(r[0]) if r[0].isdigit() else 0)
     return rows[-1][2] if rows else None
 

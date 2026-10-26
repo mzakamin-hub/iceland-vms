@@ -6,7 +6,7 @@ FW ?= fw/out
 all:
 
 check:
-	python3 -m py_compile iceland_vms/*.py iceland_vms/ui/*.py bin/iceland-vms bin/iceland-vms-helper tools/vm-iso-test.py
+	python3 -m py_compile iceland_vms/*.py iceland_vms/ui/*.py bin/iceland-vms bin/iceland-vms-helper
 	sh -n data/guest-tools/gvm-agent data/guest-tools/*.sh data/iceland-vms.sleep
 	python3 -m unittest discover -s tests -v
 
@@ -14,7 +14,6 @@ install:
 	install -d $(SHARE)/lib/iceland_vms/ui $(SHARE)/firmware $(SHARE)/guest-tools
 	install -m 644 iceland_vms/*.py $(SHARE)/lib/iceland_vms/
 	install -m 644 iceland_vms/ui/*.py $(SHARE)/lib/iceland_vms/ui/
-	install -D -m 755 tools/vm-iso-test.py $(SHARE)/tests/vm-iso-test.py
 	install -m 644 data/catalogue.json data/features.json data/org.iceland.VirtualMachines.autostart.desktop $(SHARE)/
 	install -m 755 data/guest-tools/gvm-agent data/guest-tools/*.sh $(SHARE)/guest-tools/
 	install -m 644 data/guest-tools/gvm-agent.service $(SHARE)/guest-tools/

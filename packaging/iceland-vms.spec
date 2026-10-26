@@ -2,17 +2,18 @@
 # Built from a source tarball of this repository plus fw/out (the edk2-gunyah build, see fw/BUILD.md) on Fedora 44.
 Name:           iceland-vms
 Version:        0.2
-Release:        5%{?dist}
+Release:        17%{?dist}
 Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm)
 License:        GPL-2.0-only AND BSD-2-Clause-Patent
 BuildArch:      noarch
 Source0:        iceland-vms-%{version}.tar.gz
 BuildRequires:  make, python3
-Requires:       iceland-gvm >= 0.3-27
+Requires:       iceland-gvm >= 0.3-49
 Requires:       python3-gobject, gtk4, libadwaita
 Requires:       polkit, systemd, NetworkManager, firewalld
 Requires:       dosfstools, mtools, openssl, openssh-clients, xz, zstd, coreutils
 Recommends:     vte291-gtk4, qemu-img
+Suggests:       krdc, tigervnc
 
 %description
 Virtual Machines (org.iceland.VirtualMachines): create, run and manage protected virtual machines with crosvm
@@ -43,6 +44,73 @@ make install DESTDIR=%{buildroot} PREFIX=/usr FW=fw/out
 /usr/share/doc/iceland-vms
 
 %changelog
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-17
+- repack, no code change: the edk2-gunyah firmware rebuilt from a neutral build path (no build-machine path inside
+  the .fd files; fw/SHA256SUMS regenerated); a comment and two guest-tool globs no longer spell a home path literally;
+  a privacy scan of the finished rpm gates the build
+
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-16
+- packaging only (no code change from 0.2-15): the tablet test runners (vm-iso-test.py, vm-win-test.py) are no
+  longer installed; the input-judge unit tests skip when iceland-gvm's gvm-touchinject.py is not next to them;
+  built with _buildhost iceland-builder
+
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-15
+- vhost-net ON by default (fix run V11 on q90u: guest -> host 2434 -> 3087 MB/s, host -> guest 1970 -> 4707 MB/s);
+  a kernel without /dev/vhost-net falls back to crosvm's own network instead of refusing the start
+- Windows Shut Down: the ssh "shutdown /s" result is logged and retried for 2 min while it fails (fix run WA-7: the
+  request was sent but Windows never powered off, and nothing said why)
+- vm-win-test WA-7 waits up to 10 min and shows the guest's answer
+
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-14
+- vhost-net: crosvm's argument is the bare flag ",vhost-net" (0.2-13 sent "vhost-net=true", which crosvm refused)
+- guest address: only a lease of the VM's own MAC counts (the release run's WINAPP took the stale lease of another
+  MAC at once and probed RDP on an address nobody had)
+- Windows VMs get the MAC address the image was set up with (gvm.sh's 0a:1c:47:56:4d:02): Windows keeps its adapter,
+  network profile and firewall scope; vm-win-test moves an existing app VM to it
+
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-13
+- release: the consolidated parity (0.2-6..11) + Windows (0.2-10, 0.2-12) work
+- Settings > Network: "In-kernel network (vhost-net)" per VM (crosvm --net ...,vhost-net=true; the helper loads
+  vhost_net and refuses clearly when the kernel has none); off by default until the V11 rows show a gain
+
+* Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-12
+- (Windows agent) Windows 11 ARM64 VMs: New VM > "Windows 11 ARM64 image" imports a set-up Windows disk as the VM's own
+  copy (reflink; the source is never changed) with the settings proven by vm-run WIN: ECAM UEFI firmware from
+  iceland-gvm, software display, 4 vCPU / 4 GiB, 2 MiB pages, NAT, io_uring. Start / Shut Down in the app: the clean
+  shutdown logs in over the guest's OpenSSH with a key (as the VM's owner) and runs shutdown /s; no password is stored
+- io_uring disks for every VM (Settings > Memory: Disk I/O engine; epoll selectable); I/O bounce buffer at most 320 MiB
+- tests/vm-win-test.py: the Windows VM through the app's own paths (rows WA-1..8)
+
+* Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-11
+- Settings > Memory: "Memory protection" per VM: Protected (default) or Shared with the tablet (opt-in, crosvm only,
+  feature memory_shared, off until the PV rows pass), with a permanent warning that the host can read the VM's memory;
+  shared mode starts crosvm with --protected-vm-pseudo-unprotected and no swiotlb
+
+* Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-10
+- (Windows agent) Remote Desktop button for Windows VMs (KRDC, Remmina or FreeRDP to the guest's DHCP address; the
+  client asks for the password); 2 MiB guest memory pages on by default and once for existing VMs (the setting
+  stays switchable)
+
+* Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-9
+- QEMU backend: guest RAM in a shared memfd (memory-backend-memfd,share=on) like crosvm's; with anonymous private RAM
+  the protected VM's shared swiotlb faulted into the host's demand-share path (-22) and the guest died
+
+* Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-8
+- display mode "3D: Vulkan (venus), OpenGL through zink" (DroidVM's 3D route without virgl GL): the venus device,
+  the guest's Xorg and session GL through zink (experimental, needs the venus feature)
+
+* Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-7
+- DroidVM parity, remote display: "Show the display over VNC" (crosvm --vnc-server; QEMU -vnc on 127.0.0.1),
+  optionally reachable from the network with a password (kept in the VM folder, 0600), port 5900-5999; a VNC VM
+  runs headless (no window, no session needed); VM page: "Open the VNC viewer" (KRDC, TigerVNC, Remmina or
+  gvncviewer, else the address is copied)
+
+* Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-6
+- DroidVM parity, input modes on the VM window: "Touch input" tablet (tap = click where it lands, long press =
+  right click, drag, two-finger scroll / tap = right click; default), touchpad (relative pointer) or touch screen
+  (the guest's multi-touch gestures); "Open fullscreen" on a chosen monitor, at the monitor's resolution by default
+- VM page: fullscreen on / off button for a running VM (Plasma)
+
 * Sun Oct 25 2026 mzak <mzak.amin@gmail.com> - 0.2-5
 - settings: "Accelerated X (glamor)" recommended on; the guest desktop session offers Xorg (glamor, recommended) or
   Wayland (labwc, no longer experimental: vm-run v10h drew it; the session unit of iceland-gvm 0.3-27)

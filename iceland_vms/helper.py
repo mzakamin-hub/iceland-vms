@@ -159,7 +159,9 @@ def verb_start(vmid):
         systemctl("reset-failed", unit)
         argv = ["systemd-run", "--unit", unit, "--collect", "--quiet",
                 "--description", "Virtual machine %s of %s" % (vmid, pw.pw_name),
-                "-p", "KillMode=mixed", "-p", "TimeoutStopSec=90", "-p", "LimitMEMLOCK=infinity",
+                # Windows: the clean shutdown over ssh may take 2 minutes (WinAgent below)
+                "-p", "KillMode=mixed", "-p", "TimeoutStopSec=%d" % (180 if config.is_windows(cfg) else 90),
+                "-p", "LimitMEMLOCK=infinity",
                 "-p", "OOMScoreAdjust=-500",
                 sys.executable, "-I", os.path.realpath(sys.argv[0]), "supervise", str(pw.pw_uid), vmid]
         r = subprocess.run(argv, capture_output=True, text=True, timeout=30)
@@ -447,6 +449,101 @@ def wayland_socket(uid):
                       "log in first or set display to none" % (uid, rd))
 
 
+class WinAgent:
+    """0.2-12: the clean-shutdown "agent" of a Windows guest (no virtio-console driver in Windows).
+
+    alive = the guest's OpenSSH answers on port 22 of its DHCP address (polled in a thread); "poweroff" runs
+    ssh <windows.ssh_user>@<ip> shutdown /s /t 0 AS THE VM's OWNER (never root), key only (BatchMode): the app's
+    key and the owner's own ~/.ssh keys are offered, no password exists anywhere. Windows then powers off
+    through PSCI SYSTEM_OFF and crosvm exits (vm-run W4-3).
+    """
+    path = None
+    GRACE = 120                    # Windows may install updates on the way down
+
+    def __init__(self, sup):
+        self.sup, self.alive, self.stop = sup, False, False
+        self.t = threading.Thread(target=self.loop, daemon=True)
+        self.t.start()
+
+    def ip(self):
+        return self.sup.state.get("ip") or gvmlib.lease_ip(self.sup.cfg["network"]["mac"])
+
+    def loop(self):
+        while not self.stop:
+            ip = self.ip() if self.sup.cfg["network"]["mode"] == "nat" else None
+            ok = False
+            if ip:
+                try:
+                    with socket.create_connection((ip, 22), timeout=2):
+                        ok = True
+                except OSError:
+                    ok = False
+            if ok != self.alive:
+                self.alive = ok
+                self.sup.log("windows: ssh on %s %s" % (ip, "answers" if ok else "does not answer"))
+            for _ in range(10):
+                if self.stop:
+                    break
+                time.sleep(0.5)
+
+    def send(self, cmd):
+        if cmd == "ping":
+            return self.alive
+        if cmd != "poweroff" or not self.alive:
+            return False
+        ip, pw = self.ip(), self.sup.pw
+        key = os.path.join(config.data_home(pw.pw_dir), "ssh", "id_ed25519")
+        kh = os.path.join(config.vm_dir(pw.pw_dir, self.sup.vmid), "known_hosts")
+        argv = ["ssh", "-o", "BatchMode=yes", "-o", "PasswordAuthentication=no", "-o", "ConnectTimeout=5",
+                "-o", "StrictHostKeyChecking=accept-new", "-o", "UserKnownHostsFile=" + kh, "-o", "LogLevel=ERROR"]
+        if os.path.exists(key):
+            argv += ["-i", key]                  # in addition to the owner's default ~/.ssh identities
+        argv += ["%s@%s" % (self.sup.cfg["windows"]["ssh_user"], ip), "shutdown /s /t 0"]
+        env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name, "PATH": "/usr/bin:/bin"}
+
+        def run():
+            # 0.2-15 (fix run WA-7: "asked" was logged but Windows never powered off): wait for ssh's answer and
+            # log it; retry for 2 min while it fails (right after the first boot the OpenSSH task may still be
+            # installing the key), stop as soon as the guest is gone
+            for attempt in range(1, 9):
+                try:
+                    r = subprocess.run(argv, user=pw.pw_uid, group=pw.pw_gid, extra_groups=[], cwd=pw.pw_dir, env=env,
+                                       stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60,
+                                       start_new_session=True, close_fds=True)
+                    rc, err = r.returncode, (r.stderr or r.stdout or "").strip().replace(chr(10), " ")[:200]
+                except (OSError, subprocess.TimeoutExpired) as e:
+                    rc, err = -1, str(e)[:200]
+                # Windows may drop the connection while it starts shutting down: 0 and 255 after a reset both count
+                if rc == 0 or (rc == 255 and "closed" in err.lower()):
+                    self.sup.log("windows: shutdown /s accepted (ssh rc %d, attempt %d)" % (rc, attempt))
+                    # fix2: Windows took the request ~25 s after boot and kept running; if ssh still answers
+                    # 90 s later, ask again (at most 3 accepted requests in all)
+                    accepted = getattr(self, "accepted", 0) + 1
+                    self.accepted = accepted
+                    for _ in range(18):
+                        if self.stop or not self.alive:
+                            return
+                        time.sleep(5)
+                    if accepted >= 3:
+                        self.sup.log("windows: still running 90 s after 3 accepted shutdown requests")
+                        return
+                    self.sup.log("windows: still running 90 s after shutdown /s: asking again")
+                    continue
+                self.sup.log("windows: ssh shutdown attempt %d failed (rc %d): %s" % (attempt, rc, err or "-"))
+                if self.stop:
+                    return
+                time.sleep(15)
+            self.sup.log("windows: the guest did not accept shutdown over ssh: shut it down inside Windows or use Force Off")
+
+        threading.Thread(target=run, name="win-shutdown", daemon=True).start()
+        self.sup.log("windows: asked the guest to shut down (ssh %s@%s)" % (self.sup.cfg["windows"]["ssh_user"], ip))
+        return True
+
+    def close(self):
+        self.stop = True
+        self.t.join(6)
+
+
 class Agent:
     """Line channel to the guest agent on virtio-console hvc0 (crosvm connects to agent.sock).
 
@@ -565,7 +662,7 @@ class Supervisor:
         res = {"control_sock": os.path.join(self.rdir, "crosvm.sock"),
                "serial_sock": os.path.join(self.rdir, "serial.sock"),
                "kernel": KERNEL, "initrd": INITRD,
-               "firmware": config.FIRMWARE_DEBUG if c["boot"]["firmware_debug"] else config.FIRMWARE,
+               "firmware": config.firmware_path(c),
                "cpu_sets": host.cpu_sets(), "disks": [], "shares": []}
         if self.backend == "qemu":
             res["firmware"] = res["qemu_firmware"] = qemuargs.QEMU_FIRMWARE
@@ -581,8 +678,18 @@ class Supervisor:
             if not gvmlib.tap_up():
                 gvmlib.net_up(log=self.log)
             res["tap"] = gvmlib.TAP
-        if c["display"]["gpu"] != "none":
+            if c["network"].get("vhost_net") and self.backend != "qemu":
+                if not os.path.exists("/dev/vhost-net"):
+                    subprocess.run(["modprobe", "vhost_net"], stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, check=False)
+                if not os.path.exists("/dev/vhost-net"):
+                    # 0.2-15: on by default now, so a kernel without CONFIG_VHOST_NET falls back instead of failing
+                    self.log("vhost-net: this kernel has no /dev/vhost-net; using crosvm's own network")
+                    c["network"]["vhost_net"] = False
+        if c["display"]["gpu"] != "none" and not c["display"].get("vnc"):
             res["wayland_sock"] = wayland_socket(self.uid)
+        if c["display"].get("vnc") and c["display"].get("vnc_password"):
+            res["vnc_password_file"] = self.user_file("vm", config.VNC_PASSWORD_FILE, False)
         if c["shares"]:
             res["shares"] = self.shares()
         need = qemuargs.hugepages_needed(c) if self.backend == "qemu" else 0
@@ -627,7 +734,8 @@ class Supervisor:
         dsp = self.cfg["display"]
         for flag, on in (("noglamor", not dsp.get("glamor", False)),
                          ("autologin", dsp["gpu"] != "none" and dsp.get("autologin", True)),
-                         ("wayland", dsp["gpu"] in ("virgl", "venus", "native") and dsp.get("session", "x11") == "wayland")):
+                         ("wayland", dsp["gpu"] in ("virgl", "venus", "native", "zink") and dsp.get("session", "x11") == "wayland"),
+                         ("zink", dsp["gpu"] == "zink")):
             if on:
                 open(os.path.join(d, flag), "w").close()
         return d
@@ -710,8 +818,9 @@ class Supervisor:
             self.set_state("stopping", "Battery low (%d %%): shutting down" % cap)
             self.term = True
             if self.guest_poweroff():
-                self.term_at = time.time() + 60
-                self.force_at = time.time() + 45
+                g = getattr(self.agent, "GRACE", 45)
+                self.term_at = time.time() + g + 15
+                self.force_at = time.time() + g
             else:
                 self.crosvm_stop(15)
         if self.cfg["network"]["mode"] == "nat" and not self.state["ip"]:
@@ -762,9 +871,10 @@ class Supervisor:
             return
         self.term = True
         if self.guest_poweroff():
+            g = getattr(self.agent, "GRACE", 45)
             self.set_state("stopping", "Shutting down the guest")
-            self.term_at = time.time() + 60
-            self.force_at = time.time() + 45
+            self.term_at = time.time() + g + 15
+            self.force_at = time.time() + g
         else:
             self.set_state("stopping", "Stopping")
             self.crosvm_stop(15)
@@ -781,8 +891,11 @@ class Supervisor:
             self.release_hugepages()
             self.set_state("failed", str(e))
             return 1
-        self.agent = Agent(self.rdir, self.log)
-        self.res["agent_sock"] = self.agent.path
+        if config.is_windows(self.cfg):
+            self.agent = WinAgent(self)          # clean shutdown over the guest's OpenSSH; no virtio-console
+        else:
+            self.agent = Agent(self.rdir, self.log)
+            self.res["agent_sock"] = self.agent.path
         self.inhibit = subprocess.Popen(["systemd-inhibit", "--what=idle", "--mode=block", "--who=Virtual Machines",
                                          "--why=Virtual machine %s is running" % self.cfg["name"], "sleep", "infinity"],
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

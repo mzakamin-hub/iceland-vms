@@ -1,5 +1,2 @@
-173e368eb954d5b167d4917eeee066210042f6553a42069ce1118d79b12bd3c4  edk2-gunyah-cam-debug.fd
-8b634c1e6bd11607850b69111f6c4dbd1583dbbd1460dac72dbacbdc1a4a130a  edk2-gunyah-cam-debug.vars.fd
-80fd7ac07e128bdcb733af69cdfef46bf204a273ec76caa746ff97a596da5bb7  edk2-gunyah-cam-release-noacpi.fd
-b0f6fa4d2f4fe44d93ed7f4f686a9659923c39511d1aeeb0388c6bd545065351  edk2-gunyah-cam-release.fd
-8b634c1e6bd11607850b69111f6c4dbd1583dbbd1460dac72dbacbdc1a4a130a  edk2-gunyah-cam-release.vars.fd
+efafd021055df3aec36406028fb3faf93ab977434f31951c4b560f1112737bfd  edk2-gunyah-cam-release-noacpi.fd
+b39995d8f4bffd0d8d6144da4eed730e5171559b1c99348dc8f23edd86261a1f  edk2-gunyah-cam-debug.fd

@@ -4,7 +4,7 @@ import threading
 
 from gi.repository import Adw, Gio, GLib, Gtk
 
-from .. import catalogue, create, download, host
+from .. import catalogue, config, create, download, host
 from . import util
 
 STATUS_LABEL = {"proven": "Tested on the tablet", "untested-on-device": "Not yet tested on the tablet"}
@@ -45,6 +45,9 @@ class CreateWizard(Adw.Dialog):
                  "DMA pool)", "media-optical-symbolic", lambda: self._pick_file("iso")),
                 ("Disk or cloud image", "A raw / qcow2 / .xz / .zst Linux disk image, booted with the tablet's guest kernel",
                  "drive-harddisk-symbolic", lambda: self._pick_file("image")),
+                ("Windows 11 ARM64 image", "Import a set-up Windows disk (win-image-build.ps1): UEFI ECAM firmware, "
+                 "software display, Remote Desktop; the image file itself is not changed",
+                 "computer-symbolic", lambda: self._pick_file("windows")),
                 ("Test shell", "A tiny busybox system on the serial console (the V1 test)",
                  "utilities-terminal-symbolic", lambda: self._go_resources({"kind": "test"}))):
             r = Adw.ActionRow(title=title, subtitle=sub, activatable=True)
@@ -92,9 +95,17 @@ class CreateWizard(Adw.Dialog):
         return self._page("Catalogue", pp)
 
     def _pick_file(self, kind):
-        dlg = Gtk.FileDialog(title="Choose an ISO image" if kind == "iso" else "Choose a disk image")
+        dlg = Gtk.FileDialog(title={"iso": "Choose an ISO image", "windows": "Choose the Windows disk image"}
+                             .get(kind, "Choose a disk image"))
         flt = Gtk.FileFilter()
-        if kind == "iso":
+        if kind == "windows":
+            flt.set_name("Raw disk images")
+            for p in ("*.raw", "*.img"):
+                flt.add_pattern(p)
+            imgs = os.path.join(self.win.home, ".local", "share", "gvm", "images")
+            if os.path.isdir(imgs):
+                dlg.set_initial_folder(Gio.File.new_for_path(imgs))
+        elif kind == "iso":
             flt.set_name("ISO images")
             flt.add_pattern("*.iso")
         else:
@@ -120,14 +131,17 @@ class CreateWizard(Adw.Dialog):
         rec = e.get("recommended", {})
         pp = Adw.PreferencesPage()
         g = Adw.PreferencesGroup(title="Virtual machine")
-        default_name = e.get("name") or (os.path.splitext(os.path.basename(src["path"]))[0][:40] if src.get("path")
-                                         else "Test shell")
+        win = src["kind"] == "windows"
+        default_name = "Windows 11" if win else e.get("name") or (
+            os.path.splitext(os.path.basename(src["path"]))[0][:40] if src.get("path") else "Test shell")
         self.e_name = Adw.EntryRow(title="Name", text=default_name)
         g.add(self.e_name)
         pp.add(g)
         g = Adw.PreferencesGroup(title="Resources")
         mx = host.max_vcpus()
         test = src["kind"] == "test"
+        if win:
+            rec = {"cpus": 4, "memory_mib": 4096}        # proven by vm-run WIN (v10l)
         self.e_cpus = util.spin_row("Virtual CPUs", "At most %d" % mx, 1, mx, 1, min(rec.get("cpus", 2 if test else 4), mx))
         g.add(self.e_cpus)
         mmax = max(256, host.max_guest_mib())
@@ -136,7 +150,7 @@ class CreateWizard(Adw.Dialog):
         g.add(self.e_mem)
         self.e_disk = util.spin_row("Disk size (GiB)", "Sparse: only written data uses space", 4, 512, 1,
                                     rec.get("disk_gib", 32 if src["kind"] == "iso" else 20))
-        self.e_disk.set_visible(not test)
+        self.e_disk.set_visible(not test and not win)
         g.add(self.e_disk)
         pp.add(g)
         g = Adw.PreferencesGroup(title="Devices")
@@ -148,7 +162,17 @@ class CreateWizard(Adw.Dialog):
                                                ("none", "None (serial console only)")],
                                     3 if test else 0)
         g.add(self.e_gpu)
+        self.e_gpu.set_visible(not win)          # Windows: the software display (simplefb) only
+        self.e_user = Adw.EntryRow(title="Windows account for the clean shutdown (ssh key, no password)", text="gvm")
+        self.e_user.set_visible(win)
+        g.add(self.e_user)
         pp.add(g)
+        if win:
+            g = Adw.PreferencesGroup(title="Windows")
+            g.add(util.info_row("Proven settings", "UEFI firmware with ACPI + PCI ECAM, software display, 2 MiB "
+                                    "memory pages, NAT network, io_uring disk. Sign in through Remote Desktop with your "
+                                    "Windows password; the app does not store it."))
+            pp.add(g)
         if e and e.get("notes"):
             g = Adw.PreferencesGroup(title="Notes")
             g.add(util.info_row(e["name"], e["notes"]))
@@ -160,7 +184,8 @@ class CreateWizard(Adw.Dialog):
     def _create(self):
         name = self.e_name.get_text().strip()[:64] or "VM"
         vals = dict(name=name, cpus=int(self.e_cpus.get_value()), mem=int(self.e_mem.get_value()),
-                    disk=int(self.e_disk.get_value()), net=self.e_net.get_active(), gpu=util.combo_key(self.e_gpu))
+                    disk=int(self.e_disk.get_value()), net=self.e_net.get_active(), gpu=util.combo_key(self.e_gpu),
+                    ssh_user=self.e_user.get_text().strip())
         box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, valign=Gtk.Align.CENTER,
                       margin_start=36, margin_end=36)
         self.p_label = Gtk.Label(label="Preparing...", wrap=True)
@@ -212,7 +237,9 @@ class CreateWizard(Adw.Dialog):
         notes = []
         if cfg["cloud_init"]["enabled"]:
             notes.append("User %s; the password is in the VM's overview." % cfg["cloud_init"]["user"])
-        if cfg["boot"]["mode"] == "uefi":
+        if config.is_windows(cfg):
+            notes.append("Start it, then use the Remote Desktop button once it has an address.")
+        elif cfg["boot"]["mode"] == "uefi":
             notes.append("After installing, remove the ISO in Settings > Storage.")
         self.p_detail.set_label(" ".join(notes))
         self.p_btn.set_label("Done")

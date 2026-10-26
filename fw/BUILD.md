@@ -44,3 +44,6 @@ EDK2_TARGET=RELEASE bash ./build.sh -D PCI_CAM_MODE=TRUE \
 | `SHA256SUMS` | the hashes of this build (`fw/SHA256SUMS` in this repository) |
 
 PrePi embeds `__DATE__` / `__TIME__`, so a rebuild is not bit-identical to the hashes in `fw/SHA256SUMS`.
+
+The packaged images (iceland-vms 0.2-17 / iceland-gvm 0.3-49) were built with exactly these commands from a copy of the
+tree at `/build/edk2-gunyah`, so the paths recorded in the images (PE/COFF debug entries) name `/build/...`.

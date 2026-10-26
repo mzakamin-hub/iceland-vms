@@ -2,7 +2,7 @@
 line for a validated VM description. EXPERIMENTAL: the backend stays disabled (features.qemu_backend)
 until tablet row Q1 passes.
 
-Same protected-VM model as crosvm (evaluation wf/vmapp/qemu/EVAL.md): guest RAM lent with
+Same protected-VM model as crosvm (from the QEMU-Gunyah evaluation): guest RAM lent with
 GH_VM_ANDROID_LEND_USER_MEM, the top swiotlb-size of -m shared and declared as restricted-dma-pool,
 virtio-pci forced to ACCESS_PLATFORM, no MSI (INTx doorbells), PL011 console (ttyAMA0). It therefore
 also needs OUR guest kernel (CONFIG_DMA_RESTRICTED_POOL) - a guest without it would make the host
@@ -37,7 +37,10 @@ def build(cfg, res, feats=None):
     a = ["-nodefaults", "-no-user-config",
          "-accel", "gunyah,protected=on",
          "-object", "arm-confidential-guest,id=cg0,swiotlb-size=%dM" % cfg["swiotlb_mib"],
-         "-M", "virt,confidential-guest-support=cg0",
+         # 0.2-9: guest RAM in a shared memfd like crosvm's: with anonymous private RAM the shared swiotlb went
+         # through the host's demand-share path and failed -22 (qemu-3d-run p12 / p3 runs A and B)
+         "-object", "memory-backend-memfd,id=gram,size=%dM,share=on" % mem_total,
+         "-M", "virt,confidential-guest-support=cg0,memory-backend=gram",
          "-cpu", "host", "-smp", str(cfg["cpus"]), "-m", "%dM" % mem_total,
          "-qmp", "unix:%s,server=on,wait=off" % res["control_sock"],
          "-chardev", "socket,id=ser0,path=%s" % res["serial_sock"],          # the supervisor listens
@@ -63,8 +66,17 @@ def build(cfg, res, feats=None):
               "-device", "virtio-net-pci,netdev=n0,mac=%s,romfile=" % cfg["network"]["mac"]]
     env = {}
     if cfg["display"]["gpu"] != "none":
-        a += ["-device", "virtio-gpu-pci,xres=%d,yres=%d" % (cfg["display"]["width"], cfg["display"]["height"]),
-              "-display", "gtk,gl=off,zoom-to-fit=on"]
+        d = cfg["display"]
+        # 0.2-7 (feature qemu_gl, qemu-3d-run v2 QG rows): virgl GL on QEMU = virtio-gpu-gl-pci with blob off (blob /
+        # hostmem / venus need GuestAccept, refused by patch 0005 in a protected VM); needs the dmasync guest kernel
+        gl = bool((feats or {}).get("qemu_gl")) and d["gpu"] in ("virgl", "venus", "native", "zink")
+        a += ["-device", "%s,xres=%d,yres=%d%s" % ("virtio-gpu-gl-pci" if gl else "virtio-gpu-pci", d["width"],
+                                                   d["height"], ",blob=false" if gl else "")]
+        if d.get("vnc"):                 # 0.2-7: QEMU's own VNC server, this tablet only (127.0.0.1)
+            a += ["-display", "egl-headless" if gl else "none",
+                  "-vnc", "127.0.0.1:%d" % (d.get("vnc_port", 5900) - 5900)]
+        else:
+            a += ["-display", "gtk,gl=on,zoom-to-fit=on,show-menubar=off" if gl else "gtk,gl=off,zoom-to-fit=on"]
         # input on the xHCI controller: one PCI device instead of two (no MSI under Gunyah: all PCI
         # devices share 4 INTx lines and the fork's doorbell only fires on a 0->1 edge)
         if cfg["display"]["keyboard"] or cfg["display"]["mouse"] or cfg.get("usb"):

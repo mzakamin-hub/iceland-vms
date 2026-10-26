@@ -22,6 +22,8 @@ DEFAULT_FEATURES = {
     "gpu3d_venus": True,        # 0.3-8 24 Oct: VKBLOBTEST PASS (136 MiB through host-visible coherent memory, 9 accepts) = GuestAccept proven
     "sound": False,             # crosvm has no PipeWire backend
     "qemu_backend": False,      # qemu-gunyah: evaluation only
+    "qemu_gl": False,           # 0.2-7: virgl GL on QEMU (virtio-gpu-gl-pci, egl-headless / gtk gl=on): QG rows pending
+    "memory_shared": False,     # 0.2-10: shared (pseudo-unprotected) memory mode, boot shim (gvm.sh pvm rows PV*)
     "max_running": 1,           # one VM at a time (Gunyah RM / memory)
     "min_battery_percent": 20,  # refuse a start below this when not charging
     "stop_battery_percent": 8,  # running VMs are shut down below this when not charging
@@ -202,7 +204,7 @@ def start_warnings(cfg):
     """Non-blocking warnings shown before a start."""
     w = []
     b = kernel_build()
-    if cfg["display"]["gpu"] in ("virgl", "venus", "native") and b is not None and b < MIN_3D_KERNEL_BUILD:
+    if cfg["display"]["gpu"] in ("virgl", "venus", "native", "zink") and b is not None and b < MIN_3D_KERNEL_BUILD:
         w.append("This host kernel (%s) is older than q90r (build 00529): the 3D window may stay black. "
                  "Update the kernel, or use the 2D display" % kernel())
     return w
@@ -218,10 +220,11 @@ def start_guard(cfg, feats=None, running=0):
     if cap is not None and not on and cap < f["min_battery_percent"]:
         why.append("Battery %d %% and no charger: connect the charger (needs %d %%)" % (cap, f["min_battery_percent"]))
     m = meminfo()
-    need = cfg["memory_mib"] + cfg["swiotlb_mib"] + config.HOST_RESERVE_MIB
+    sw = 0 if cfg.get("memory_mode") == "shared" else cfg["swiotlb_mib"]     # shared mode: no bounce pool
+    need = cfg["memory_mib"] + sw + config.HOST_RESERVE_MIB
     if m.get("MemAvailable", 0) and m["MemAvailable"] < need:
         why.append("Not enough free memory: %d MiB available, %d MiB needed (guest %d + swiotlb %d + %d for the host)"
-                   % (m["MemAvailable"], need, cfg["memory_mib"], cfg["swiotlb_mib"], config.HOST_RESERVE_MIB))
+                   % (m["MemAvailable"], need, cfg["memory_mib"], sw, config.HOST_RESERVE_MIB))
     t = max_temp_c()
     if t is not None and t > f["max_start_temp_c"]:
         why.append("The tablet is hot (%.0f C): let it cool down" % t)

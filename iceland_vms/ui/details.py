@@ -1,4 +1,5 @@
 """The selected VM: actions, overview, serial console, settings, snapshots, logs."""
+import copy
 import os
 import time
 
@@ -14,6 +15,14 @@ try:
     from gi.repository import Vte
 except (ValueError, ImportError):
     Vte = None
+
+
+def kwin_probe():
+    """iceland-gvm's KWin window helper when the session is Plasma (fullscreen toggle), else None."""
+    p = os.path.join(config.GVM_DIR, "gvm-kwinprobe.py")
+    if "KDE" not in os.environ.get("XDG_CURRENT_DESKTOP", "").upper() or not os.path.exists(p):
+        return None
+    return p
 
 
 class ConsoleView(Gtk.Box):
@@ -116,7 +125,14 @@ class DetailsPage(Adw.Bin):
         self.b_shutdown = util.button(icon="system-shutdown-symbolic", tooltip="Shut down", cb=self.shutdown)
         self.b_force = util.button(icon="process-stop-symbolic", tooltip="Force off", css=["destructive-action"],
                                    cb=self.force_off)
-        for b in (self.b_start, self.b_shutdown, self.b_force):
+        # 0.2-6: enter / leave fullscreen of the running VM's window (KWin; the window's title is the VM's name)
+        self.b_full = util.button(icon="view-fullscreen-symbolic", tooltip="Fullscreen on / off", cb=self.toggle_fullscreen)
+        # 0.2-7: a VNC viewer for a VM whose display is served over VNC
+        self.b_vnc = util.button(icon="preferences-desktop-remote-desktop-symbolic", tooltip="Open the VNC viewer",
+                                 cb=self.open_vnc)
+        # 0.2-10 (Windows agent): Remote Desktop to a Windows guest (its address from the NAT's DHCP lease)
+        self.b_rdp = util.button(icon="computer-symbolic", tooltip="Remote Desktop (RDP)", cb=self.open_rdp)
+        for b in (self.b_start, self.b_shutdown, self.b_force, self.b_full, self.b_vnc, self.b_rdp):
             hb.pack_start(b)
         menu = Gio.Menu()
         menu.append("Clone...", "vm.clone")
@@ -190,6 +206,12 @@ class DetailsPage(Adw.Bin):
         self.b_start.set_visible(s in ("stopped", "failed"))
         self.b_shutdown.set_visible(s in ("running", "rebooting"))
         self.b_force.set_visible(s in ("running", "starting", "rebooting", "stopping"))
+        dsp = self.cfg.get("display", {})
+        self.b_full.set_visible(s == "running" and kwin_probe() is not None
+                                and dsp.get("gpu", "none") != "none" and not dsp.get("vnc"))
+        self.b_vnc.set_visible(s == "running" and bool(dsp.get("vnc")) and dsp.get("gpu", "none") != "none")
+        self.b_rdp.set_visible(s == "running" and config.is_windows(self.cfg)
+                               and self.cfg.get("network", {}).get("mode", "none") != "none")
 
     def on_tab(self, *_):
         name = self.stack.get_visible_child_name()
@@ -235,21 +257,29 @@ class DetailsPage(Adw.Bin):
             r.add_suffix(util.button(icon="edit-copy-symbolic", tooltip="Copy the password", css=["flat"],
                                      cb=self.copy_password))
             g.add(r)
+        if config.is_windows(c):
+            g.add(util.info_row("Windows", "Remote Desktop (the button above) once the guest has an address; Shut Down "
+                                "logs in over ssh with a key (account %s) and runs shutdown /s. The app never "
+                                "stores the Windows password." % c["windows"]["ssh_user"], "computer-symbolic"))
         if c["display"]["gpu"] != "none" and st["state"] == "running":
             g.add(util.info_row("Display", "The guest screen is a separate window on this desktop; keyboard and "
                                 "mouse work inside it while it has focus.", "video-display-symbolic"))
 
         g = group("Resources")
-        ent = catalogue.get(c["os"]) if c["os"] != "custom" else None
+        win = config.is_windows(c)
+        ent = catalogue.get(c["os"]) if c["os"] != "custom" and not win else None
         rows = [
-            ("System", ent["name"] if ent else "Custom"),
-            ("Boot", "Tablet guest kernel (direct)" if c["boot"]["mode"] == "direct" else "UEFI firmware"),
+            ("System", "Windows 11 ARM64" if win else ent["name"] if ent else "Custom"),
+            ("Boot", "Tablet guest kernel (direct)" if c["boot"]["mode"] == "direct" else
+             "UEFI firmware (ACPI + PCI ECAM)" if c["boot"].get("firmware") == "ecam" else "UEFI firmware"),
             ("Processors", "%d vCPUs%s" % (c["cpus"], "" if c["cpu_affinity"] == "any" else " on %s cores" % c["cpu_affinity"])),
-            ("Memory", "%s GiB + %d MiB swiotlb" % (("%.2f" % (c["memory_mib"] / 1024)).rstrip("0").rstrip("."), c["swiotlb_mib"])),
+            ("Memory", ("%s GiB, shared with the host (not protected)" if c.get("memory_mode") == "shared"
+                        else "%s GiB + %d MiB swiotlb") % ((("%.2f" % (c["memory_mib"] / 1024)).rstrip("0").rstrip("."),)
+                                                           + (() if c.get("memory_mode") == "shared" else (c["swiotlb_mib"],)))),
             ("Storage", ", ".join("%s%s" % (d["name"], " (ro)" if d["ro"] else "") for d in c["disks"]) or "none"),
             ("Network", {"off": "Off", "nat": "NAT (shared through the tablet's connection)"}[c["network"]["mode"]]),
             ("Display", {"none": "None (console only)", "2d": "2D window", "virgl": "3D OpenGL (virgl)", "native": "3D native context",
-                         "venus": "3D OpenGL (virgl) + Vulkan (venus)",
+                         "venus": "3D OpenGL (virgl) + Vulkan (venus)", "zink": "3D Vulkan (venus), OpenGL through zink",
                          "simplefb": "Software display (shared framebuffer)"}[c["display"]["gpu"]]),
             ("Disk usage", util.human_size(storage.usage(self.win.home, c))),
         ]
@@ -270,7 +300,7 @@ class DetailsPage(Adw.Bin):
             for w in warn:
                 g.add(util.info_row(w, "", "dialog-warning-symbolic"))
         untested = []
-        if c["boot"]["mode"] == "uefi" or (ent and ent.get("status") != "proven"):
+        if (c["boot"]["mode"] == "uefi" and not win) or (ent and ent.get("status") != "proven"):
             untested.append(("Untested combination", "This system or boot mode has been prepared on the PC but "
                              "not yet run on the tablet. Report what happens (Logs tab)."))
         if c["memory_mib"] > host.features()["max_proven_memory_mib"]:
@@ -292,8 +322,73 @@ class DetailsPage(Adw.Bin):
             util.error(self.win, "No password", str(e))
 
     # ---- actions ----
+    def open_vnc(self):
+        """0.2-7: start the first installed VNC viewer on 127.0.0.1:port, else show the address."""
+        import shutil
+        for prog in ("krdc", "vncviewer", "remmina", "gvncviewer"):
+            argv = config.vnc_viewer_argv(self.cfg, prog)
+            if argv and shutil.which(prog):
+                try:
+                    Gio.Subprocess.new(argv, Gio.SubprocessFlags.NONE)
+                    return
+                except GLib.Error as e:
+                    util.error(self.win, "Could not start %s" % prog, e.message)
+                    return
+        host, port = config.vnc_address(self.cfg)
+        self.copy("%s:%d" % (host, port))
+        util.error(self.win, "No VNC viewer installed",
+                   "Install KRDC (KDE) or TigerVNC (vncviewer), or connect any VNC viewer to %s:%d "
+                   "(copied to the clipboard)." % (host, port))
+
+    def open_rdp(self):
+        """0.2-10: the first installed RDP client to the guest's DHCP address; the client asks for the Windows
+        user's password itself (never stored or passed by the app)."""
+        import shutil
+        from .. import gvmlib
+        ip = gvmlib.lease_ip(self.cfg.get("network", {}).get("mac"))
+        if not ip:
+            util.error(self.win, "No address yet", "Windows has no DHCP lease yet: wait for it to finish starting "
+                       "(the first start with Setup takes about 10 minutes).")
+            return
+        for prog in config.RDP_CLIENTS:
+            if shutil.which(prog):
+                try:
+                    Gio.Subprocess.new(config.rdp_client_argv(prog, ip), Gio.SubprocessFlags.NONE)
+                    return
+                except GLib.Error as e:
+                    util.error(self.win, "Could not start %s" % prog, e.message)
+                    return
+        self.copy(ip)
+        util.error(self.win, "No RDP client installed",
+                   "Install KRDC (KDE), Remmina or FreeRDP, or connect any RDP client to %s "
+                   "(copied to the clipboard)." % ip)
+
+    def toggle_fullscreen(self):
+        """0.2-6: KWin script through iceland-gvm's gvm-kwinprobe.py: fullscreen when windowed and back."""
+        probe = kwin_probe()
+        if not probe:
+            return
+        cap = "%s - Virtual Machines" % self.cfg["name"]
+
+        def listed(ok, out, err):
+            line = next((x for x in out.splitlines() if x.startswith("GVMWIN")), "")
+            if not line:
+                self.win.toast("The VM window is not open")
+                return
+            act = "unfullscreen" if "fullscreen=true" in line else "fullscreen"
+            util.run_async([probe, act, cap], lambda *_a: None)
+        util.run_async([probe, "list", cap], listed)
+
     def start(self):
         c = self.cfg
+        # 0.2-6: a fullscreen VM gets the monitor's resolution (it may have changed since the settings were saved)
+        from .settings import native_size
+        ns = native_size(c)
+        if ns and (c["display"]["width"], c["display"]["height"]) != ns:
+            c = copy.deepcopy(c)
+            c["display"]["width"], c["display"]["height"] = ns
+            storage.save_vm(self.win.home, c)
+            self.cfg = c
         try:
             config.validate(c, host.features())
         except config.ConfigError as e:

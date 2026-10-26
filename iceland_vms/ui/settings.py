@@ -11,13 +11,41 @@ from gi.repository import Adw, Gio, GLib, Gtk
 from .. import backend, config, host, imageprobe, storage
 from . import util
 
+
+def monitors():
+    """[(connector, label, width_px, height_px)] of the host's monitors (GDK; the connector is crosvm's wl_output
+    name, the size in device pixels = logical size x scale)."""
+    out = []
+    try:
+        from gi.repository import Gdk
+        mons = Gdk.Display.get_default().get_monitors()
+        for i in range(mons.get_n_items()):
+            m = mons.get_item(i)
+            con = m.get_connector() or ""
+            if con:
+                g = m.get_geometry()
+                sc = m.get_scale() if hasattr(m, "get_scale") else m.get_scale_factor()
+                pw, ph = int(round(g.width * sc)), int(round(g.height * sc))
+                desc = m.get_description() or m.get_model() or con
+                out.append((con, "%s (%s, %dx%d)" % (con, desc, pw, ph), pw, ph))
+    except Exception:  # noqa: BLE001 - no display (tests) or an old GDK
+        pass
+    return out
+
+
+def native_size(cfg):
+    """The guest size for a fullscreen VM at the monitor's resolution, or None (config.fullscreen_size)."""
+    return config.fullscreen_size(cfg, [(m[0], m[2], m[3]) for m in monitors()])
+
 # 3D default (24 Oct, V4 + V4-5/V4-6 PASS): "venus" = OpenGL through virgl + Vulkan through venus
 GPU_ITEMS = [("venus", "3D: OpenGL (virgl) + Vulkan (venus) - recommended"),
              ("simplefb", "Software display (fallback, like DroidVM)"),
              ("none", "None (serial console only)"), ("2d", "2D window (virtio-gpu)"),
              ("virgl", "3D: OpenGL only (virgl)"),
+             ("zink", "3D: Vulkan (venus), OpenGL through zink (experimental, DroidVM-style)"),
              ("native", "3D: msm native context (experimental, falls back to llvmpipe)")]
-GPU_FEATURE = {"virgl": "gpu3d_virgl", "native": "gpu3d_native", "venus": "gpu3d_venus", "simplefb": "simplefb"}
+GPU_FEATURE = {"virgl": "gpu3d_virgl", "native": "gpu3d_native", "venus": "gpu3d_venus", "zink": "gpu3d_venus",
+               "simplefb": "simplefb"}
 
 
 class SettingsPage(Gtk.Box):
@@ -93,13 +121,38 @@ class SettingsPage(Gtk.Box):
                                  min(c["memory_mib"], max(mmax, 256)))
         g.add(self.mem)
         self.swiotlb = util.spin_row("I/O bounce buffer (MiB)",
-                                     "Shared swiotlb for all virtio I/O; 128 is enough, 256 for 3D or heavy disk use",
-                                     64, 1024, 64, c["swiotlb_mib"])
+                                     "Shared swiotlb for all virtio I/O; 128 is enough, 256 for 3D or heavy disk use (at most 320: the "
+                                     "guest kernel cannot set up a larger pool)",
+                                     config.LIMITS["swiotlb_mib"][0], config.LIMITS["swiotlb_mib"][1], 64,
+                                     min(c["swiotlb_mib"], config.LIMITS["swiotlb_mib"][1]))
         g.add(self.swiotlb)
-        self.huge = Adw.SwitchRow(title="Transparent huge pages",
-                                  subtitle="2 MiB pages for guest memory: far fewer hypervisor mappings, but untested "
-                                  "here (other Gunyah hosts saw THP split issues). Experimental", active=c["hugepages"])
+        self.huge = Adw.SwitchRow(title="2 MiB guest memory pages (recommended)",
+                                  subtitle="Guest memory is handed to the hypervisor in 2 MiB pieces: 512 times fewer "
+                                  "secure-world calls. Off = 4 KiB pieces, which froze the tablet with Windows",
+                                  active=c["hugepages"])
         g.add(self.huge)
+        # 0.2-12: crosvm's disk engine (vm-run OPT v10m: io_uring 3.3 GB/s read vs 0.7 with epoll)
+        self.aio = util.combo_row("Disk I/O engine", [("uring", "io_uring (recommended)"), ("epoll", "epoll (the old default)")],
+                                  0 if c.get("disk_async", "uring") == "uring" else 1)
+        g.add(self.aio)
+        # 0.2-10 (step 4): opt-in shared memory mode, off by default, with the warning always next to it
+        self.memmode = util.combo_row("Memory protection", [
+            ("protected", "Protected: the tablet cannot read the VM's memory (default)"),
+            ("shared", "Shared with the tablet: NOT protected")])
+        util.combo_set(self.memmode, c.get("memory_mode", "protected"))
+        g.add(self.memmode)
+        self.memmode_warn = util.info_row("The tablet can read this VM's memory", config.MEMORY_SHARED_WARNING
+                                          + ("" if f.get("memory_shared") else
+                                             " Not enabled on this tablet yet (feature memory_shared)."),
+                                          "dialog-warning-symbolic")
+        g.add(self.memmode_warn)
+
+        def _memmode_changed(*_):
+            shared = util.combo_key(self.memmode) == "shared"
+            self.memmode_warn.set_visible(shared)
+            self.swiotlb.set_sensitive(not shared)
+        self.memmode.connect("notify::selected", _memmode_changed)
+        _memmode_changed()
         self.mem_note = util.info_row("Larger than tested",
                                       "Guests above %d MiB have not been run on this tablet yet (other Gunyah hosts "
                                       "ran out of memory above ~1 GiB with an older driver). Report the result."
@@ -176,6 +229,11 @@ class SettingsPage(Gtk.Box):
         self.mac.add_suffix(util.button(icon="view-refresh-symbolic", css=["flat"], tooltip="New random address",
                                         cb=lambda: self.mac.set_text(config.random_mac())))
         g.add(self.mac)
+        self.vhost = Adw.SwitchRow(title="In-kernel network (vhost-net)",
+                                   subtitle="The tablet kernel moves the network packets instead of crosvm: "
+                                   "less CPU, more throughput. Needs a kernel with vhost-net (q90s or newer)",
+                                   active=c["network"].get("vhost_net", True))
+        g.add(self.vhost)
         g.add(util.info_row("Bridged network not available",
                             "A Wi-Fi station cannot be bridged and the tablet has no Ethernet: guests use NAT "
                             "(10.250.0.0/24). Use port forwards to reach a guest from the local network."))
@@ -202,7 +260,24 @@ class SettingsPage(Gtk.Box):
                                  c["display"]["dpi"])
         self.kbd = Adw.SwitchRow(title="Keyboard in the window", active=c["display"]["keyboard"])
         self.mouse = Adw.SwitchRow(title="Mouse and touch in the window",
-                                   subtitle="Touch on the window arrives as pointer input", active=c["display"]["mouse"])
+                                   subtitle="Mouse and touch on the window reach the guest", active=c["display"]["mouse"])
+        self.inmode = util.combo_row("Touch input", [
+            ("tablet", "Tablet: tap clicks, long press = right click, two fingers scroll"),
+            ("touchpad", "Touchpad: drag moves the pointer, tap clicks, two fingers scroll"),
+            ("touch", "Touch screen: the guest's own multi-touch gestures")])
+        util.combo_set(self.inmode, c["display"].get("input_mode", "tablet"))
+        self.fullscreen = Adw.SwitchRow(title="Open fullscreen", active=c["display"].get("fullscreen", False),
+                                        subtitle="Leave or enter fullscreen from the VM page while it runs")
+        self.fsnative = Adw.SwitchRow(title="Fullscreen at the monitor's resolution",
+                                      subtitle="The guest display gets the monitor's full resolution; off = the "
+                                      "width and height above, scaled to the screen",
+                                      active=c["display"].get("fullscreen_native", True))
+        mons = [("", "Any monitor")] + [(m[0], m[1]) for m in monitors()]
+        cur = c["display"].get("output", "")
+        if cur and cur not in [k for k, _ in mons]:
+            mons.append((cur, cur + " (not connected)"))
+        self.output = util.combo_row("Monitor for fullscreen", mons)
+        util.combo_set(self.output, cur)
         self.autologin = Adw.SwitchRow(title="Log in automatically",
                                        subtitle="Desktop guests start logged in: touch and the on-screen keyboard "
                                        "cannot type into a login screen inside the VM window", active=c["display"]["autologin"])
@@ -215,7 +290,28 @@ class SettingsPage(Gtk.Box):
                                       1 if c["display"].get("session", "x11") == "wayland" else 0)
         self.session.set_subtitle("Wayland starts labwc with a terminal instead of the Xorg desktop (needs labwc "
                                   "in the guest; the display manager is bypassed for that boot)")
-        for w in (self.width, self.height, self.dpi, self.kbd, self.mouse, self.autologin, self.session, self.glamor):
+        for w in (self.width, self.height, self.dpi, self.kbd, self.mouse, self.inmode, self.fullscreen, self.fsnative,
+                  self.output, self.autologin, self.session, self.glamor):
+            g.add(w)
+        p.add(g)
+
+        # 0.2-7 (DroidVM parity): the display over VNC instead of the window
+        d = c["display"]
+        g = Adw.PreferencesGroup(title="Remote display (VNC)",
+                                 description="The VM's screen is served over VNC instead of a window: connect with "
+                                 "KRDC, TigerVNC or any VNC viewer (the VM page has a button for it). Without a "
+                                 "window the VM also runs without a logged-in session.")
+        self.vnc = Adw.SwitchRow(title="Show the display over VNC", active=d.get("vnc", False))
+        self.vnclan = Adw.SwitchRow(title="Reachable from other computers",
+                                    subtitle="Listens on every network address (needs a password; open the port in "
+                                    "the firewall yourself). Off = this tablet only (127.0.0.1)",
+                                    active=d.get("vnc_lan", False))
+        self.vncport = util.spin_row("Port", "VNC display :N = port 5900 + N", 5900, 5999, 1, d.get("vnc_port", 5900))
+        self.vncpwon = Adw.SwitchRow(title="Password", subtitle="VNC passwords count 8 characters at most and are "
+                                     "weakly protected: use them only on a trusted network",
+                                     active=d.get("vnc_password", False))
+        self.vncpw = Adw.PasswordEntryRow(title="New password (empty = keep the current one)")
+        for w in (self.vnc, self.vnclan, self.vncport, self.vncpwon, self.vncpw):
             g.add(w)
         p.add(g)
 
@@ -568,6 +664,8 @@ class SettingsPage(Gtk.Box):
         c["memory_mib"] = int(self.mem.get_value())
         c["swiotlb_mib"] = int(self.swiotlb.get_value())
         c["hugepages"] = self.huge.get_active()
+        c["disk_async"] = util.combo_key(self.aio)
+        c["memory_mode"] = util.combo_key(self.memmode)
         b = c["boot"]
         b["mode"] = util.combo_key(self.bootmode)
         b["root"] = self.root.get_text().strip()
@@ -577,6 +675,7 @@ class SettingsPage(Gtk.Box):
         b["initrd"] = self.initrd.get_active()
         b["firmware_debug"] = self.fwdebug.get_active()
         c["network"]["mode"] = util.combo_key(self.net)
+        c["network"]["vhost_net"] = self.vhost.get_active()
         c["network"]["mac"] = self.mac.get_text().strip().lower()
         d = c["display"]
         d["gpu"] = util.combo_key(self.gpu)
@@ -584,6 +683,15 @@ class SettingsPage(Gtk.Box):
         d["keyboard"], d["mouse"] = self.kbd.get_active(), self.mouse.get_active()
         d["autologin"], d["glamor"] = self.autologin.get_active(), self.glamor.get_active()
         d["session"] = util.combo_key(self.session)
+        d["input_mode"] = util.combo_key(self.inmode)
+        d["fullscreen"] = self.fullscreen.get_active()
+        d["output"] = util.combo_key(self.output)
+        d["fullscreen_native"] = self.fsnative.get_active()
+        d["vnc"], d["vnc_lan"] = self.vnc.get_active(), self.vnclan.get_active()
+        d["vnc_port"], d["vnc_password"] = int(self.vncport.get_value()), self.vncpwon.get_active()
+        ns = native_size(c)
+        if ns:
+            d["width"], d["height"] = ns
         c["sound"]["mode"] = util.combo_key(self.sound)
         c["cloud_init"]["enabled"] = self.ci.get_active()
         c["cloud_init"]["user"] = self.ciuser.get_text().strip()
@@ -602,6 +710,17 @@ class SettingsPage(Gtk.Box):
         if c["memory_mib"] + c["swiotlb_mib"] > host.max_guest_mib(0) + 512:
             util.error(self.win, "Too much memory", "Keep at least %d MiB for the tablet." % config.HOST_RESERVE_MIB)
             return
+        # 0.2-7: the VNC password lives in the VM folder (0600), never in vm.json
+        pwfile = os.path.join(config.vm_dir(self.win.home, c["id"]), config.VNC_PASSWORD_FILE)
+        newpw = self.vncpw.get_text()
+        if c["display"]["vnc_password"] and not newpw and not os.path.exists(pwfile):
+            util.error(self.win, "Invalid settings", "Type a VNC password (or turn the password off).")
+            return
+        if newpw:
+            fd = os.open(pwfile, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w") as fh:
+                fh.write(newpw.strip()[:8] + "\n")
+            self.vncpw.set_text("")
         ci_changed = c["cloud_init"] != self.cfg["cloud_init"] or c["name"] != self.cfg["name"]
         storage.save_vm(self.win.home, c)
         storage.sync_autostart(self.win.home)
