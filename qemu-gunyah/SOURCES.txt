@@ -1,0 +1,6 @@
+qemu: upstream v10.0.2 (ff3419cb) + patches/0001-0011 = Gunyah accelerator from
+  https://github.com/qemu-gunyah/qemu-android-gunyah 1eee442b71731ad8bbec9635e579a847f1dead64
+  (0003 initrd in the DTB / x1 = 0, 0004 256 MB LEND chunks, 0005 refuse virtio-gpu blob / hostmem / venus
+  in a protected VM, 0006 kernel ioeventfd when gunyah_ioeventfd is loaded, 0007 SHARE regions populated before the share, 0008 GH-PAGE diagnosis, 0009 virgl fences through the sync thread when ICELAND_GH_VIRGL_SYNC=1, 0010 ICELAND_EGL_READBACK=0 diagnostic, 0011 the fence sync thread on by default)
+edk2 (/usr/share/iceland-qemu-gunyah/QEMU_EFI.fd): https://github.com/qemu-gunyah/edk2-gunyah-qemu
+  50c9eb78fa17d012bf850bcb4d06422f850a3126, ArmVirtPkg/ArmVirtQemu.dsc RELEASE, GCC 13.3 cross, built in /build/edk2-qemu

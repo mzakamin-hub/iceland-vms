@@ -1,0 +1,113 @@
+From 496f67f52d3ddce10b6482f2e253d589894999a3 Mon Sep 17 00:00:00 2001
+From: iceland <iceland@localhost>
+Date: Sat, 24 Oct 2026 11:12:11 +0300
+Subject: [PATCH] gunyah: refuse virtio-gpu blob / hostmem / venus in a
+ protected VM (no GuestAccept here)
+
+A protected Gunyah guest owns its stage-2: host-visible blobs mapped into the
+hostmem BAR at run time would be SHAREd with GH_VM_SET_USER_MEM_REGION, which
+the protected guest never accepts. Refuse the combination at realize with a
+clear error; plain virgl (blob=false) stays allowed. ICELAND_GH_ALLOW_BLOB=1
+skips the check for experiments.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ accel/gunyah/gunyah-all.c  |  5 +++++
+ accel/stubs/gunyah-stub.c  |  5 +++++
+ hw/display/virtio-gpu-gl.c | 25 +++++++++++++++++++++++++
+ include/system/gunyah.h    |  7 +++++++
+ 4 files changed, 42 insertions(+)
+
+diff --git a/accel/gunyah/gunyah-all.c b/accel/gunyah/gunyah-all.c
+index ff7ba534..b705ab9a 100644
+--- a/accel/gunyah/gunyah-all.c
++++ b/accel/gunyah/gunyah-all.c
+@@ -1441,6 +1441,11 @@ void gunyah_cache_lend_range(void)
+     }
+ }
+ 
++bool gunyah_is_protected(void)
++{
++    return gunyah_enabled() && is_confidential_guest();
++}
++
+ bool gunyah_addr_is_lend(uint64_t gpa)
+ {
+     /* Lock-free: uses cached range set before VM_START */
+diff --git a/accel/stubs/gunyah-stub.c b/accel/stubs/gunyah-stub.c
+index a1e0e9ec..28bb9e22 100644
+--- a/accel/stubs/gunyah-stub.c
++++ b/accel/stubs/gunyah-stub.c
+@@ -35,3 +35,8 @@ void gunyah_gic_register_irq_notifiers(EventNotifier *notifiers,
+ bool gunyah_addr_is_lend(uint64_t gpa) {
+     return false;
+ }
++
++bool gunyah_is_protected(void)
++{
++    return false;
++}
+diff --git a/hw/display/virtio-gpu-gl.c b/hw/display/virtio-gpu-gl.c
+index 6eb11a48..368113f7 100644
+--- a/hw/display/virtio-gpu-gl.c
++++ b/hw/display/virtio-gpu-gl.c
+@@ -22,6 +22,7 @@
+ #include "hw/virtio/virtio-gpu-bswap.h"
+ #include "hw/virtio/virtio-gpu-pixman.h"
+ #include "hw/qdev-properties.h"
++#include "system/gunyah.h"
+ 
+ #include <virglrenderer.h>
+ 
+@@ -191,6 +192,30 @@ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
+         return;
+     }
+ 
++    /*
++     * iceland: a protected Gunyah guest owns its stage-2. blob=true with
++     * hostmem (and venus, which needs both) maps host virglrenderer memory
++     * into the hostmem BAR at run time; the accelerator would SHARE it with
++     * GH_VM_SET_USER_MEM_REGION, which a protected VM never accepts (the
++     * crosvm gvm-v4 GuestAccept path: GH_VM_PROTECTED_SHARE + a guest
++     * MEM_ACCEPT through gunyah_guest.ko, is not in this QEMU). The guest
++     * would fault on the first map, or QEMU exits on the SHARE error.
++     * Plain virgl (blob=false) works: transfers use the guest's swiotlb.
++     */
++    if (gunyah_is_protected() &&
++        (virtio_gpu_blob_enabled(g->parent_obj.conf) ||
++         virtio_gpu_hostmem_enabled(g->parent_obj.conf) ||
++         virtio_gpu_venus_enabled(g->parent_obj.conf)) &&
++        !getenv("ICELAND_GH_ALLOW_BLOB")) {
++        error_setg(errp, "virtio-gpu-gl: blob, hostmem and venus need host "
++                   "memory shared into the protected Gunyah guest at run "
++                   "time (GuestAccept), which this QEMU does not "
++                   "implement; use blob=false,hostmem=0,venus=off");
++        error_append_hint(errp, "ICELAND_GH_ALLOW_BLOB=1 skips this check "
++                          "(experiments only).\n");
++        return;
++    }
++
+     g->parent_obj.conf.flags |= (1 << VIRTIO_GPU_FLAG_VIRGL_ENABLED);
+     g->capset_ids = virtio_gpu_virgl_get_capsets(g);
+     VIRTIO_GPU_BASE(g)->virtio_config.num_capsets = g->capset_ids->len;
+diff --git a/include/system/gunyah.h b/include/system/gunyah.h
+index 3eefec77..45f40200 100644
+--- a/include/system/gunyah.h
++++ b/include/system/gunyah.h
+@@ -39,6 +39,13 @@ int gunyah_arm_set_dtb(uint64_t dtb_start, uint64_t dtb_size);
+  * memory directly.
+  */
+ bool gunyah_addr_is_lend(uint64_t gpa);
++
++/*
++ * iceland: true when -accel gunyah builds a protected VM (guest RAM lent).
++ * Devices use it to refuse features that need host memory mapped into the
++ * guest at run time (virtio-gpu blob / hostmem / venus = GuestAccept).
++ */
++bool gunyah_is_protected(void);
+ void gunyah_arm_fdt_customize(void *fdt, uint64_t mem_base,
+                 uint32_t gic_phandle);
+ 
+-- 
+2.43.0
+

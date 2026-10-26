@@ -1,0 +1,120 @@
+From 98af03f2ecd47af3c32b45dcfe991d8ffec6a012 Mon Sep 17 00:00:00 2001
+From: iceland <iceland@localhost>
+Date: Sat, 24 Oct 2026 04:00:41 +0300
+Subject: [PATCH] gunyah: pass -initrd to the kernel, zero x1 for Linux, refuse
+ hugetlb RAM
+
+virt_modify_dtb() builds the DTB from scratch and so dropped the
+linux,initrd-start/end properties that arm_load_dtb() had set: an -initrd
+never reached the kernel (VFS: Unable to mount root fs on
+unknown-block(0,0)). Re-add them to /chosen.
+
+The boot stub put the image base into x1 for the edk2 PrePi path; for a
+direct Linux boot this violates the arm64 boot protocol (x1-x3 nonzero
+warning). Zero x1 when no firmware is loaded.
+
+The host Gunyah driver's gunyah_demand_page() rejects folios that are not
+swap-backed with -EIO, so hugetlb-backed guest RAM faults forever on the
+first instruction fetch. Refuse hugetlb RAM up front with a clear error
+(ICELAND_GH_ALLOW_HUGETLB=1 overrides for a fixed kernel).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ accel/gunyah/gunyah-all.c   | 17 +++++++++++++++++
+ hw/arm/virt.c               | 18 ++++++++++++++++++
+ include/system/gunyah_int.h |  1 +
+ 3 files changed, 36 insertions(+)
+
+diff --git a/accel/gunyah/gunyah-all.c b/accel/gunyah/gunyah-all.c
+index 2be5166a..daf77db4 100644
+--- a/accel/gunyah/gunyah-all.c
++++ b/accel/gunyah/gunyah-all.c
+@@ -44,6 +44,7 @@
+ #include "system/gunyah_int.h"
+ #include "linux-headers/linux/gunyah.h"
+ #include "exec/memory.h"
++#include "exec/cpu-common.h"
+ #include "qemu/error-report.h"
+ #include "exec/address-spaces.h"
+ #include "hw/boards.h"
+@@ -564,6 +565,17 @@ static void gunyah_add_mem(GUNYAHState *s, MemoryRegionSection *section,
+      * all pages are physically resident when pin_user_pages runs,
+      * so the bulk LEND includes everything.
+      */
++    if (lend && area->ram_block &&
++        qemu_ram_pagesize(area->ram_block) > qemu_real_host_page_size() &&
++        !getenv("ICELAND_GH_ALLOW_HUGETLB")) {
++        error_report("GH: guest RAM is hugetlb-backed (page size %zu): "
++                     "the host Gunyah driver cannot demand-page hugetlb "
++                     "folios (gunyah_demand_page -> -EIO). Use a plain "
++                     "memfd/anonymous backend (THP) instead.",
++                     qemu_ram_pagesize(area->ram_block));
++        exit(1);
++    }
++
+     if (lend) {
+         FILE *f;
+ 
+@@ -2085,6 +2097,11 @@ void gunyah_start_vm(void)
+                     (((kernel_entry >> 16) & 0xFFFF) << 5)),
+                 0xD61F0080, /* br x4 */
+             };
++            if (s->linux_direct_boot) {
++                /* arm64 boot protocol: x1-x3 must be zero */
++                stub[15] = 0xAA1F03E1; /* mov x1, xzr */
++                stub[16] = 0xAA1F03E1; /* mov x1, xzr (pad) */
++            }
+             memcpy(stub_hva, stub, sizeof(stub));
+             error_report("GH: Injected boot stub at GPA=0x%"PRIx64
+                          " (writes 'QEMU\\r\\n' to UART 0x09000000, "
+diff --git a/hw/arm/virt.c b/hw/arm/virt.c
+index 3a1e4443..f8742e0c 100644
+--- a/hw/arm/virt.c
++++ b/hw/arm/virt.c
+@@ -2683,6 +2683,23 @@ static void virt_modify_dtb(const struct arm_boot_info *binfo, void *fdt)
+                            "/pl011@9000000");
+         error_report("GH: DTB /chosen/bootargs: %s", bootargs);
+         error_report("GH: DTB /chosen/stdout-path: /pl011@9000000");
++
++        /*
++         * iceland: arm_load_dtb() put linux,initrd-start/end into the
++         * QEMU-generated tree, but this function replaces the whole tree,
++         * so -initrd never reached the kernel ("VFS: Unable to mount root
++         * fs on unknown-block(0,0)").  Re-add them (#address-cells = 2).
++         */
++        if (binfo->initrd_size) {
++            uint64_t istart = binfo->initrd_start;
++            uint64_t iend = binfo->initrd_start + binfo->initrd_size;
++
++            fdt_setprop_u64(fdt, chosen_off, "linux,initrd-start", istart);
++            fdt_setprop_u64(fdt, chosen_off, "linux,initrd-end", iend);
++            error_report("GH: DTB /chosen/linux,initrd: 0x%"PRIx64
++                         "-0x%"PRIx64" (%"PRIu64" bytes)",
++                         istart, iend, (uint64_t)binfo->initrd_size);
++        }
+     }
+ 
+     {
+@@ -3700,6 +3717,7 @@ static void machvirt_init(MachineState *machine)
+     if (gunyah_enabled() && vms->bootinfo.entry) {
+         GUNYAHState *gs = get_gunyah_state();
+         gs->kernel_entry = vms->bootinfo.entry;
++        gs->linux_direct_boot = !vms->bootinfo.firmware_loaded;
+         error_report("GH: kernel entry from arm_load_kernel: 0x%"PRIx64,
+                      gs->kernel_entry);
+     }
+diff --git a/include/system/gunyah_int.h b/include/system/gunyah_int.h
+index 8ae68be0..b567f47a 100644
+--- a/include/system/gunyah_int.h
++++ b/include/system/gunyah_int.h
+@@ -66,6 +66,7 @@ struct GUNYAHState {
+      * 0 means not set (fall back to scanning memory for ARM64 magic).
+      */
+     uint64_t kernel_entry;
++    bool linux_direct_boot;   /* iceland: -kernel without firmware */
+ };
+ 
+ struct AccelCPUState {
+-- 
+2.43.0
+

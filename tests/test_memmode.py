@@ -46,6 +46,7 @@ class MemoryMode(unittest.TestCase):
     def test_shared_needs_feature(self):
         c = fedora_cfg()
         c["memory_mode"] = "shared"
+        c["display"]["gpu"] = "simplefb"           # 0.2-19: no 3D display in the shared mode
         self.assertRaises(config.ConfigError, config.validate, c, dict(FEATS))
         config.validate(c, dict(FEATS, memory_shared=True))
 
@@ -105,6 +106,76 @@ class ReleaseFixes(unittest.TestCase):
     def test_windows_mac(self):
         c = config.windows_defaults(config.default_config("w", "W"))
         self.assertEqual(c["network"]["mac"], config.WINDOWS_IMAGE_MAC)
+
+
+class Shared3D(unittest.TestCase):
+    """0.2-19 refused every 3D display with the shared memory mode; 0.2-20 allows 3D OpenGL (virgl, gvm 0.3-57
+    PV-B-3: glmark2 1634) behind the feature memory_shared_3d, Vulkan / native stay refused."""
+
+    def test_vulkan_native_refused(self):
+        for gpu in config.SHARED_3D_BLOCKED:
+            c = fedora_cfg()
+            c["memory_mode"] = "shared"
+            c["display"]["gpu"] = gpu
+            self.assertRaises(config.ConfigError, config.validate, c)
+        self.assertEqual(set(config.SHARED_3D_BLOCKED), {"native", "venus", "zink"})
+
+    def test_virgl_allowed_with_feature(self):
+        c = fedora_cfg()
+        c["memory_mode"] = "shared"
+        c["display"]["gpu"] = "virgl"
+        config.validate(c)
+        config.validate(c, dict(FEATS, memory_shared=True, memory_shared_3d=True))
+        a, env = crosvmargs.build(c, RES)
+        self.assertIn("--protected-vm-pseudo-unprotected", a)
+        self.assertNotIn("--swiotlb", a)
+        self.assertTrue(any("context-types=virgl:virgl2," in x for x in a))
+
+    def test_virgl_refused_without_feature(self):
+        c = fedora_cfg()
+        c["memory_mode"] = "shared"
+        c["display"]["gpu"] = "virgl"
+        with self.assertRaises(config.ConfigError) as cm:
+            config.validate(c, dict(FEATS, memory_shared=True, memory_shared_3d=False))
+        self.assertIn("memory_shared_3d", str(cm.exception))
+
+    def test_default_feature_on(self):
+        self.assertTrue(host.DEFAULT_FEATURES["memory_shared_3d"])
+
+    def test_software_display_ok(self):
+        for gpu in ("simplefb", "none", "2d"):
+            c = fedora_cfg()
+            c["memory_mode"] = "shared"
+            c["display"]["gpu"] = gpu
+            config.validate(c, dict(FEATS, memory_shared=True, memory_shared_3d=False))
+
+    def _load(self, gpu):
+        import json
+        import tempfile
+        c = fedora_cfg()
+        c["memory_mode"] = "shared"
+        c["display"]["gpu"] = gpu
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "vm.json")
+            with open(p, "w") as f:
+                json.dump(c, f)
+            return config.load(p)
+
+    def test_saved_shared_venus_loads_as_software_display(self):
+        got = self._load("venus")
+        self.assertEqual(got["display"]["gpu"], "simplefb")
+        config.validate(got)
+
+    def test_saved_shared_virgl_kept(self):
+        got = self._load("virgl")
+        self.assertEqual(got["display"]["gpu"], "virgl")
+        config.validate(got)
+
+    def test_protected_3d_ok(self):
+        for gpu in ("virgl", "venus", "zink"):
+            c = fedora_cfg()
+            c["display"]["gpu"] = gpu
+            config.validate(c)
 
 
 if __name__ == "__main__":

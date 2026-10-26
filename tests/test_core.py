@@ -71,8 +71,11 @@ class ConfigTests(unittest.TestCase):
         c["usb"] = [{"vendor": "0781", "product": "5581"}]
         self.assertEqual(config.resolve_backend(c, {"qemu_backend": True}), "qemu")
         self.assertEqual(config.resolve_backend(c, {"qemu_backend": False}), "crosvm")
-        c["display"]["gpu"] = "virgl"
-        self.assertIn("3D graphics", config.backend_conflicts(c, "qemu"))
+        c["display"]["gpu"] = "virgl"                                    # 0.2-19: virgl on QEMU with qemu_gl
+        self.assertEqual(config.backend_conflicts(c, "qemu", {"qemu_gl": True}), [])
+        self.assertIn("3D graphics", config.backend_conflicts(c, "qemu", {"qemu_gl": False}))
+        c["display"]["gpu"] = "venus"                                    # Vulkan stays crosvm-only
+        self.assertTrue(any("Vulkan" in x for x in config.backend_conflicts(c, "qemu", {"qemu_gl": True})))
         self.assertEqual(config.backend_conflicts(dict(c, usb=[]), "crosvm"), [])
 
     def test_feature_gates(self):
@@ -202,6 +205,26 @@ class QemuArgsTests(unittest.TestCase):
         self.assertIn("console=ttyAMA0", a[a.index("-append") + 1])
         self.assertNotIn("console=ttyS0", a[a.index("-append") + 1])
         self.assertEqual(env.get("WAYLAND_DISPLAY"), "/run/user/1000/wayland-0")
+        self.assertIn("virt,gic-version=3,", s)                          # the machine line the QG rows ran
+        self.assertIn("memory-backend-memfd,id=gram", s)                # memfd guest RAM only (QG5 run P)
+
+    def test_virgl_gl_unlocked(self):
+        from iceland_vms import qemuargs
+        c = fedora_cfg()
+        c["backend"] = "qemu"
+        c["display"]["gpu"] = "virgl"
+        feats = {"qemu_backend": True, "qemu_gl": True, "gpu3d_virgl": True, "uefi": True}
+        config.validate(c, feats)
+        a, _ = qemuargs.build(c, RES, feats)
+        s = " ".join(a)
+        self.assertIn("virtio-gpu-gl-pci,xres=1600,yres=1000,blob=false", s)
+        self.assertIn("gtk,gl=on", s)
+        c["display"]["vnc"] = True
+        a, _ = qemuargs.build(c, RES, feats)
+        self.assertIn("egl-headless", a)
+        self.assertRaises(config.ConfigError, config.validate, dict(c, display=dict(c["display"], gpu="venus")), feats)
+        a, _ = qemuargs.build(c, RES, dict(feats, qemu_gl=False))
+        self.assertIn("virtio-gpu-pci,xres=1600,yres=1000", " ".join(a))
 
 
 class QemuDeviceBudgetTests(unittest.TestCase):

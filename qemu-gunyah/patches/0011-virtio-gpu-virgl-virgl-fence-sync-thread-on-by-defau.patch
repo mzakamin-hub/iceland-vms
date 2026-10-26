@@ -1,0 +1,42 @@
+From 1b5aab0976034b6058ff1bda8f96b2637f50f17e Mon Sep 17 00:00:00 2001
+From: iceland <iceland@localhost>
+Date: Mon, 26 Oct 2026 14:04:40 +0300
+Subject: [PATCH] virtio-gpu-virgl: virgl fence sync thread on by default
+
+qemu-3d-run QG6 / QG7 on q90u: glmark2 1375-1419 with the sync thread against
+279-289 with the old polling, in egl-headless (+ VNC) and in the GTK gl=on
+window alike, with clean stops. ICELAND_GH_VIRGL_SYNC=0 turns it off.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-virgl.c | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index bdf7f392..87d05ef9 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -1114,7 +1114,13 @@ static bool virtio_gpu_virgl_sync_wanted(void)
+ {
+     const char *e = getenv("ICELAND_GH_VIRGL_SYNC");
+ 
+-    return e && *e && strcmp(e, "0") != 0;
++    /*
++     * ICELAND (patch 0011): on by default since qemu-3d-run QG6 / QG7 (q90u):
++     * glmark2 1375-1419 with it vs 279-289 without, in egl-headless (+ VNC) and
++     * in the GTK gl=on window alike, clean stops; ICELAND_GH_VIRGL_SYNC=0 turns
++     * it off.
++     */
++    return !(e && !strcmp(e, "0"));
+ }
+ 
+ static void virtio_gpu_virgl_poll_fd_read(void *opaque)
+@@ -1184,7 +1190,7 @@ int virtio_gpu_virgl_init(VirtIOGPU *g)
+                          "(no EGL fence support?): timer polling");
+         }
+     } else {
+-        error_report("GH-VIRGL: fence sync thread off (ICELAND_GH_VIRGL_SYNC unset or 0): timer polling");
++        error_report("GH-VIRGL: fence sync thread off (ICELAND_GH_VIRGL_SYNC=0): timer polling");
+     }
+ 
+     gl->fence_poll = timer_new_ms(QEMU_CLOCK_VIRTUAL,

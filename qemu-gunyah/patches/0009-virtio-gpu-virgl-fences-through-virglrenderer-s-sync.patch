@@ -1,0 +1,104 @@
+From 030697b0d35ad4e2ebc2caa69dc13a2b71b95630 Mon Sep 17 00:00:00 2001
+From: mzak <mzak.amin@gmail.com>
+Date: Mon, 26 Oct 2026 10:54:13 +0300
+Subject: [PATCH] virtio-gpu-virgl: fences through virglrenderer's sync thread
+ (ICELAND_GH_VIRGL_SYNC)
+
+Without VIRGL_RENDERER_THREAD_SYNC a retired fence is only seen by
+virgl_renderer_poll() at the next control-queue kick or the 10 ms timer, so a
+guest waiting on its fence every frame is throttled (qemu-3d-run p4: glmark2
+280, every scene ~3.5 ms per frame, renderer virgl on the Adreno 840; crosvm
+with thread sync scores 9253). With ICELAND_GH_VIRGL_SYNC=1 virglrenderer waits
+on the EGL fences in its own thread and signals an eventfd that the main loop
+watches. Opt-in: the sync thread's GL context comes from the display callbacks
+(safe for egl-headless, unproven for GTK).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ hw/display/virtio-gpu-virgl.c | 50 +++++++++++++++++++++++++++++++++++
+ 1 file changed, 50 insertions(+)
+
+diff --git a/hw/display/virtio-gpu-virgl.c b/hw/display/virtio-gpu-virgl.c
+index 3ca6a1a4..bdf7f392 100644
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -24,6 +24,7 @@
+ #include "ui/egl-helpers.h"
+ 
+ #include <virglrenderer.h>
++#include "qemu/main-loop.h"
+ 
+ struct virtio_gpu_virgl_resource {
+     struct virtio_gpu_simple_resource base;
+@@ -1093,6 +1094,37 @@ void virtio_gpu_virgl_fence_poll(VirtIOGPU *g)
+     virtio_gpu_fence_poll(g);
+ }
+ 
++/*
++ * ICELAND (patch 0009): fence completion through virglrenderer's sync thread.
++ * Without VIRGL_RENDERER_THREAD_SYNC a retired fence is only noticed by
++ * virgl_renderer_poll(), which QEMU calls when the guest kicks the control
++ * queue and from a 10 ms timer: a guest that waits for its fence (glFinish /
++ * swap in every glmark2 frame) waits for the next kick or the timer. qemu-3d-run
++ * p4 run N: glmark2 280 with every scene at ~3.5 ms per frame on
++ * "virgl (Adreno (TM) 840)", where crosvm (rutabaga: thread sync + poll fd)
++ * scores 9253. With the flag, virglrenderer waits on the EGL fences in its own
++ * thread (a surfaceless shared context) and signals an eventfd; the main loop
++ * then runs virgl_renderer_poll() at once.
++ * ICELAND_GH_VIRGL_SYNC=1 turns it on, 0 / unset keeps the old polling: the sync
++ * thread creates its GL context through the display's callbacks, which is safe
++ * for egl-headless (eglCreateContext / eglMakeCurrent from any thread) but not
++ * proven for GTK (GtkGLArea contexts belong to the GTK main thread).
++ */
++static bool virtio_gpu_virgl_sync_wanted(void)
++{
++    const char *e = getenv("ICELAND_GH_VIRGL_SYNC");
++
++    return e && *e && strcmp(e, "0") != 0;
++}
++
++static void virtio_gpu_virgl_poll_fd_read(void *opaque)
++{
++    VirtIOGPU *g = opaque;
++
++    virgl_renderer_poll();          /* clears the eventfd, writes the retired fences */
++    virtio_gpu_process_cmdq(g);
++}
++
+ void virtio_gpu_virgl_reset_scanout(VirtIOGPU *g)
+ {
+     int i;
+@@ -1131,12 +1163,30 @@ int virtio_gpu_virgl_init(VirtIOGPU *g)
+     }
+ #endif
+ 
++    if (virtio_gpu_virgl_sync_wanted()) {
++        flags |= VIRGL_RENDERER_THREAD_SYNC;
++    }
++
+     ret = virgl_renderer_init(g, flags, &virtio_gpu_3d_cbs);
+     if (ret != 0) {
+         error_report("virgl could not be initialized: %d", ret);
+         return ret;
+     }
+ 
++    if (flags & VIRGL_RENDERER_THREAD_SYNC) {
++        int fd = virgl_renderer_get_poll_fd();
++
++        if (fd >= 0) {
++            qemu_set_fd_handler(fd, virtio_gpu_virgl_poll_fd_read, NULL, g);
++            error_report("GH-VIRGL: fence sync thread ON (poll fd %d)", fd);
++        } else {
++            error_report("GH-VIRGL: fence sync thread requested but virglrenderer gave no poll fd "
++                         "(no EGL fence support?): timer polling");
++        }
++    } else {
++        error_report("GH-VIRGL: fence sync thread off (ICELAND_GH_VIRGL_SYNC unset or 0): timer polling");
++    }
++
+     gl->fence_poll = timer_new_ms(QEMU_CLOCK_VIRTUAL,
+                                   virtio_gpu_fence_poll, g);
+ 
+-- 
+2.43.0
+

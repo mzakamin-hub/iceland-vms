@@ -48,6 +48,17 @@ BOOT_MODES = ("direct", "uefi")
 # "shared" = DroidVM-style pseudo-unprotected mode: RAM shared at run time and accepted by a boot shim,
 # THE HOST CAN READ AND WRITE ALL OF THE VM'S MEMORY. Opt-in per VM, crosvm only.
 MEMORY_MODES = ("protected", "shared")
+# 0.2-19: no 3D display with the shared memory mode (release run PV-B-3 failed). 0.2-20: that failure was the test
+# (glmark2 without sudo); gvm 0.3-57's corrected PV-B-3 ran virgl GL in the shared mode on crosvm 0.3-55 (glmark2
+# 1634, render node present, every blob released) -> 3D OpenGL (virgl) is allowed with Shared (feature
+# memory_shared_3d); Vulkan (venus / zink) and the native context have not run in that mode and stay refused
+GPU_3D = ("virgl", "native", "venus", "zink")
+SHARED_3D_OK = ("virgl",)
+SHARED_3D_BLOCKED = tuple(g for g in GPU_3D if g not in SHARED_3D_OK)
+SHARED_3D_REASON = ("3D Vulkan and the native context are not available with the shared memory mode yet: "
+                    "use 3D OpenGL, the software display or no display, or the Protected memory mode")
+SHARED_3D_FEATURE_REASON = ("3D graphics with the shared memory mode is not enabled on this tablet "
+                            "(feature memory_shared_3d): use the software display or the Protected memory mode")
 NET_MODES = ("off", "nat")
 # 0.2-10: RDP clients the app can start, in order of preference (KDE first), and their command lines
 RDP_CLIENTS = ("krdc", "remmina", "sdl-freerdp", "sdl-freerdp3", "xfreerdp", "xfreerdp3", "wlfreerdp")
@@ -283,6 +294,9 @@ def validate(cfg, features=None):
         raise ConfigError("disk_async must be one of %s" % (DISK_ASYNC,))
     if cfg.get("memory_mode") not in MEMORY_MODES:
         raise ConfigError("memory_mode must be one of %s" % (MEMORY_MODES,))
+    if cfg["memory_mode"] == "shared" and isinstance(cfg.get("display"), dict) and \
+            cfg["display"].get("gpu") in SHARED_3D_BLOCKED:
+        raise ConfigError(SHARED_3D_REASON)
 
     b = cfg.get("boot")
     if not isinstance(b, dict) or b.get("mode") not in BOOT_MODES:
@@ -419,10 +433,12 @@ def validate(cfg, features=None):
             raise ConfigError("UEFI boot is disabled on this tablet (feature uefi)")
         if cfg["memory_mode"] == "shared" and not features.get("memory_shared"):
             raise ConfigError("the shared memory mode is not enabled yet (feature memory_shared not proven on this tablet)")
+        if cfg["memory_mode"] == "shared" and dsp["gpu"] in GPU_3D and not features.get("memory_shared_3d"):
+            raise ConfigError(SHARED_3D_FEATURE_REASON)
         rb = resolve_backend(cfg, features)
         if cfg.get("usb") and rb != "qemu":
             raise ConfigError("USB passthrough needs the QEMU-Gunyah backend, which is not enabled on this tablet")
-        bad = backend_conflicts(cfg, rb)
+        bad = backend_conflicts(cfg, rb, features)
         if bad:
             raise ConfigError("the %s backend cannot provide %s: switch the backend in Settings > General"
                               % (BACKEND_LABEL[rb], ", ".join(bad)))
@@ -451,6 +467,10 @@ def load(path):
     # 0.2-10: once per VM, 2 MiB guest memory pages on (the hugepages default); the user can turn it off afterwards
     if isinstance(raw, dict) and raw.get("mem_defaults_rev", 0) < MEM_DEFAULTS_REV:
         cfg["hugepages"], cfg["mem_defaults_rev"] = True, MEM_DEFAULTS_REV
+    # 0.2-19: a VM saved by 0.2-18 with the shared memory mode AND a 3D display gets the software display; 0.2-20:
+    # only for the 3D modes still refused there (Vulkan / native); 3D OpenGL stays. Everything else stays as it was
+    if cfg.get("memory_mode") == "shared" and isinstance(d, dict) and d.get("gpu") in SHARED_3D_BLOCKED:
+        d["gpu"], d["glamor"] = "simplefb", False
     return cfg
 
 
@@ -558,8 +578,11 @@ def kernel_cmdline(cfg):
 BACKEND_CAPS = {
     "crosvm": {"usb": False, "gpu2d": True, "gpu3d": True, "simplefb": True, "wayland_window": True, "shares": True,
                "agent": True, "uefi": True, "direct": True, "snapshots_offline": True, "shared_memory": True},
-    "qemu": {"usb": True, "gpu2d": True, "gpu3d": False, "simplefb": False, "wayland_window": True, "shares": True,
-             "agent": True, "uefi": True, "direct": True, "snapshots_offline": True, "shared_memory": False},
+    # 0.2-19: QEMU runs OpenGL 3D through virgl (virtio-gpu-gl, blob off; qemu-3d-run QG7: about 80 % of crosvm's
+    # glmark2), not venus / zink / the native context (they need host-visible blobs = GuestAccept, crosvm only)
+    "qemu": {"usb": True, "gpu2d": True, "gpu3d": False, "gpu3d_virgl": True, "simplefb": False, "wayland_window": True,
+             "shares": True, "agent": True, "uefi": True, "direct": True, "snapshots_offline": True,
+             "shared_memory": False},
 }
 BACKEND_LABEL = {"crosvm": "crosvm", "qemu": "QEMU-Gunyah"}
 
@@ -579,14 +602,18 @@ def resolve_backend(cfg, features=None):
     return "crosvm"
 
 
-def backend_conflicts(cfg, backend):
-    """Human-readable list of the VM's enabled features that backend cannot provide."""
+def backend_conflicts(cfg, backend, features=None):
+    """Human-readable list of the VM's enabled features that backend cannot provide.
+    features (optional): the tablet's feature gates; QEMU's virgl 3D needs qemu_gl."""
     caps = BACKEND_CAPS[backend]
     out = []
     if cfg.get("usb") and not caps["usb"]:
         out.append("USB passthrough")
-    if cfg["display"]["gpu"] in ("virgl", "native", "venus", "zink") and not caps["gpu3d"]:
+    g = cfg["display"]["gpu"]
+    if g == "virgl" and not (caps["gpu3d"] or (caps.get("gpu3d_virgl") and (features is None or features.get("qemu_gl")))):
         out.append("3D graphics")
+    elif g in ("native", "venus", "zink") and not caps["gpu3d"]:
+        out.append("3D Vulkan / native context (use 3D OpenGL)" if caps.get("gpu3d_virgl") else "3D graphics")
     if cfg["display"]["gpu"] == "simplefb" and not caps["simplefb"]:
         out.append("the shared-framebuffer software display")
     if cfg["display"]["gpu"] != "none" and not caps["wayland_window"]:

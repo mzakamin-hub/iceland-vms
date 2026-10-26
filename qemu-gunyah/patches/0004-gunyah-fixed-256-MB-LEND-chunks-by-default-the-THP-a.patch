@@ -1,0 +1,36 @@
+From 2a82d5d76274a35e1163be19132aee47eebefaca Mon Sep 17 00:00:00 2001
+From: iceland <iceland@localhost>
+Date: Sat, 24 Oct 2026 10:00:58 +0300
+Subject: [PATCH] gunyah: fixed 256 MB LEND chunks by default (the THP-aware
+ split made 162 slots for 4 GiB -> VM_START ENODEV)
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ accel/gunyah/gunyah-all.c | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/accel/gunyah/gunyah-all.c b/accel/gunyah/gunyah-all.c
+index daf77db4..ff7ba534 100644
+--- a/accel/gunyah/gunyah-all.c
++++ b/accel/gunyah/gunyah-all.c
+@@ -1043,6 +1043,17 @@ skip_phase3:
+     if (lend && total_size > GUNYAH_LEND_CHUNK_SIZE) {
+         int chunk_idx = 0;
+ 
++        /*
++         * iceland: the THP-aware split below made 162 LEND slots for a 4 GiB guest
++         * (q90m tablet row Q1b, 24 Oct) and VM_START then failed with ENODEV; the
++         * fixed 256 MB split (16 slots for 4 GiB) starts. The hypervisor maps the
++         * pages of each parcel with block entries where the folios allow anyway.
++         * ICELAND_GH_THP_SPLIT=1 restores the fork's split.
++         */
++        if (need_thp && !getenv("ICELAND_GH_THP_SPLIT")) {
++            free(need_thp);
++            need_thp = NULL;
++        }
+         if (need_thp) {
+             /*
+              * THP-aware LEND splitting:
+-- 
+2.43.0
+

@@ -2,8 +2,8 @@
 # Built from a source tarball of this repository plus fw/out (the edk2-gunyah build, see fw/BUILD.md) on Fedora 44.
 Name:           iceland-vms
 Version:        0.2
-Release:        18%{?dist}
-Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm)
+Release:        20%{?dist}
+Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm, QEMU-Gunyah)
 License:        GPL-2.0-only AND BSD-2-Clause-Patent
 BuildArch:      noarch
 Source0:        iceland-vms-%{version}.tar.gz
@@ -12,7 +12,7 @@ Requires:       iceland-gvm >= 0.3-55
 Requires:       python3-gobject, gtk4, libadwaita
 Requires:       polkit, systemd, NetworkManager, firewalld
 Requires:       dosfstools, mtools, openssl, openssh-clients, xz, zstd, coreutils
-Recommends:     vte291-gtk4, qemu-img
+Recommends:     vte291-gtk4, qemu-img, iceland-qemu-gunyah >= 10.0.2-1
 Suggests:       krdc, tigervnc
 
 %description
@@ -44,6 +44,20 @@ make install DESTDIR=%{buildroot} PREFIX=/usr FW=fw/out
 /usr/share/doc/iceland-vms
 
 %changelog
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-20
+- 3D OpenGL (virgl) is available with the shared memory mode again (feature memory_shared_3d, on): the 0.2-19 block
+  came from a test fault; the corrected run (iceland-gvm 0.3-57 PV-B-3) drew virgl GL in that mode on crosvm 0.3-55,
+  glmark2 1634. 3D Vulkan (venus / zink) and the native context stay refused with Shared (not run in that mode); a VM
+  saved with Shared + 3D OpenGL keeps its display
+- no change to the QEMU-Gunyah path (the 0.2-19 QEMUAPP failures were test faults; the kit's vm-qemu-test.py v2 fixes
+  them)
+
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-19
+- QEMU-Gunyah backend available (Settings > General > Backend; crosvm stays the default): runs protected VMs with
+  QEMU (iceland-qemu-gunyah >= 10.0.2-1), with OpenGL 3D through virgl (display "3D OpenGL") in the QEMU window or
+  over VNC, USB passthrough, guest RAM in a shared memfd. Vulkan (venus / zink) stays crosvm-only
+- A VM with the shared memory mode uses the software display (3D displays are not offered in that mode)
+
 * Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-18
 - Settings > Memory > Memory protection: "Shared with the tablet" is available (feature memory_shared on: the shared
   memory mode passed its tablet rows on 26 Oct). Opt-in per VM, Protected stays the default, and the warning that

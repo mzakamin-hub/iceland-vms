@@ -1,0 +1,80 @@
+From c79822d9be48d762076331ed86532cc9fe636875 Mon Sep 17 00:00:00 2001
+From: iceland <iceland@localhost>
+Date: Fri, 23 Oct 2026 11:34:03 +0300
+Subject: [PATCH 2/2] gunyah: make the host-global mm tuning opt-in
+ (ICELAND_GH_TUNE_MM=1)
+
+---
+ accel/gunyah/gunyah-all.c | 27 ++++++++++++++++++++++-----
+ 1 file changed, 22 insertions(+), 5 deletions(-)
+
+diff --git a/accel/gunyah/gunyah-all.c b/accel/gunyah/gunyah-all.c
+index 86014f56..2be5166a 100644
+--- a/accel/gunyah/gunyah-all.c
++++ b/accel/gunyah/gunyah-all.c
+@@ -69,6 +69,23 @@ static void gunyah_unblock_sigbus_early(void)
+     pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+ }
+ 
++
++/*
++ * iceland: the Android build writes host-global VM tunables (drop_caches,
++ * compact_memory, mTHP "always" for all intermediate sizes, never restored).
++ * On a general-purpose Fedora host that is a persistent system change, so it
++ * is opt-in here: ICELAND_GH_TUNE_MM=1 enables the original behaviour.
++ */
++static FILE *gh_mm_fopen(const char *path)
++{
++    const char *e = getenv("ICELAND_GH_TUNE_MM");
++
++    if (!e || strcmp(e, "1") != 0) {
++        return NULL;
++    }
++    return fopen(path, "w");
++}
++
+ static void gunyah_region_add(MemoryListener *listener,
+                            MemoryRegionSection *section);
+ static void gunyah_region_del(MemoryListener *listener,
+@@ -576,9 +593,9 @@ static void gunyah_add_mem(GUNYAHState *s, MemoryRegionSection *section,
+ 
+         /* Phase 1: Free memory and compact */
+         error_report("GH: Phase 1: dropping caches + compacting ...");
+-        f = fopen("/proc/sys/vm/drop_caches", "w");
++        f = gh_mm_fopen("/proc/sys/vm/drop_caches");
+         if (f) { fprintf(f, "3\n"); fclose(f); }
+-        f = fopen("/proc/sys/vm/compact_memory", "w");
++        f = gh_mm_fopen("/proc/sys/vm/compact_memory");
+         if (f) { fprintf(f, "1\n"); fclose(f); }
+         usleep(500000);
+ 
+@@ -613,7 +630,7 @@ static void gunyah_add_mem(GUNYAHState *s, MemoryRegionSection *section,
+                          "/sys/kernel/mm/transparent_hugepage/"
+                          "hugepages-%s/enabled",
+                          mthp_sizes[mi]);
+-                f = fopen(path, "w");
++                f = gh_mm_fopen(path);
+                 if (f) {
+                     fprintf(f, "always\n");
+                     fclose(f);
+@@ -733,7 +750,7 @@ static void gunyah_add_mem(GUNYAHState *s, MemoryRegionSection *section,
+                  * larger contiguous blocks for subsequent allocations.
+                  */
+                 if (batch_idx % 4 == 0 && offset + batch_size < total_size) {
+-                    f = fopen("/proc/sys/vm/compact_memory", "w");
++                    f = gh_mm_fopen("/proc/sys/vm/compact_memory");
+                     if (f) { fprintf(f, "1\n"); fclose(f); }
+                     usleep(200000); /* 200ms for compaction */
+                 }
+@@ -859,7 +876,7 @@ static void gunyah_add_mem(GUNYAHState *s, MemoryRegionSection *section,
+                     }
+ 
+                     /* Compact */
+-                    f = fopen("/proc/sys/vm/compact_memory", "w");
++                    f = gh_mm_fopen("/proc/sys/vm/compact_memory");
+                     if (f) { fprintf(f, "1\n"); fclose(f); }
+                     usleep(300000);
+ 
+-- 
+2.43.0
+

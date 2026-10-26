@@ -1,0 +1,89 @@
+From 56603f7dabc1ee0aac6c72cb68f28b94c171687a Mon Sep 17 00:00:00 2001
+From: mzak <mzak.amin@gmail.com>
+Date: Sun, 25 Oct 2026 15:31:48 +0300
+Subject: [PATCH] gunyah: describe the host page behind a SHARE fault the
+ demand pager keeps failing (GH-PAGE)
+
+p3 QG: even with the swiotlb populated + mlocked before VM_START (0007) the guest still faulted into the host
+driver's demand pager inside it (attempt=-22, gunyah_rm_platform_pre_demand_page -> qcom_scm assign -22). On the
+first PERMANENT fault of a non-LEND address, log present / swapped / exclusive / PFN from /proc/self/pagemap and
+the THP / compound / mlocked / anon / lru / reserved / mmap bits from /proc/kpageflags.
+
+Signed-off-by: mzak <mzak.amin@gmail.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ accel/gunyah/gunyah-all.c | 51 +++++++++++++++++++++++++++++++++++++++
+ 1 file changed, 51 insertions(+)
+
+diff --git a/accel/gunyah/gunyah-all.c b/accel/gunyah/gunyah-all.c
+index 39e861ff..cd7c7e23 100644
+--- a/accel/gunyah/gunyah-all.c
++++ b/accel/gunyah/gunyah-all.c
+@@ -1501,6 +1501,54 @@ bool gunyah_is_protected(void)
+     return gunyah_enabled() && is_confidential_guest();
+ }
+ 
++/*
++ * ICELAND (patch 0008, diagnosis of p3 QG): describe the host page behind a guest address of a SHARE slot when the
++ * host's demand pager keeps failing (-22) on it: present / PFN / exclusive from /proc/self/pagemap and the
++ * kpageflags bits that matter (THP / compound / mlocked / anon / lru / reserved / mmap). Needs root.
++ */
++static void gunyah_describe_host_page(uint64_t gpa)
++{
++    GUNYAHState *s = GUNYAH_STATE(current_accel());
++    uint64_t hva = 0, ent = 0, flags = 0, pfn;
++    uint32_t i;
++    int fd;
++
++    for (i = 0; i < s->nr_slots; i++) {
++        if (s->slots[i].size && gpa >= s->slots[i].start &&
++            gpa < s->slots[i].start + s->slots[i].size) {
++            hva = (uint64_t)(uintptr_t)s->slots[i].mem + (gpa - s->slots[i].start);
++            break;
++        }
++    }
++    if (!hva) {
++        error_report("GH-PAGE gpa=0x%"PRIx64": no slot", gpa);
++        return;
++    }
++    fd = open("/proc/self/pagemap", O_RDONLY);
++    if (fd < 0 || pread(fd, &ent, 8, (hva / 4096) * 8) != 8) {
++        error_report("GH-PAGE gpa=0x%"PRIx64" hva=0x%"PRIx64": pagemap unreadable", gpa, hva);
++        if (fd >= 0) {
++            close(fd);
++        }
++        return;
++    }
++    close(fd);
++    pfn = ent & ((1ULL << 55) - 1);
++    fd = open("/proc/kpageflags", O_RDONLY);
++    if (fd >= 0) {
++        if (pread(fd, &flags, 8, pfn * 8) != 8) {
++            flags = 0;
++        }
++        close(fd);
++    }
++    error_report("GH-PAGE gpa=0x%"PRIx64" hva=0x%"PRIx64" present=%d swapped=%d exclusive=%d pfn=0x%"PRIx64
++                 " kpageflags=0x%"PRIx64" (thp=%d head=%d tail=%d huge=%d mlocked=%d anon=%d lru=%d reserved=%d"
++                 " mmap=%d)", gpa, hva, (int)(ent >> 63 & 1), (int)(ent >> 62 & 1), (int)(ent >> 56 & 1), pfn,
++                 flags, (int)(flags >> 22 & 1), (int)(flags >> 15 & 1), (int)(flags >> 16 & 1),
++                 (int)(flags >> 17 & 1), (int)(flags >> 33 & 1), (int)(flags >> 12 & 1), (int)(flags >> 5 & 1),
++                 (int)(flags >> 32 & 1), (int)(flags >> 11 & 1));
++}
++
+ bool gunyah_addr_is_lend(uint64_t gpa)
+ {
+     /* Lock-free: uses cached range set before VM_START */
+@@ -2640,6 +2688,9 @@ static int gunyah_vcpu_exec(CPUState *cpu)
+                                 " — injecting abort into guest",
+                                 cpu->cpu_index, fault_addr, attempt,
+                                 acpu->same_fault_count);
++                            if (!gunyah_addr_is_lend(fault_addr)) {
++                                gunyah_describe_host_page(fault_addr);
++                            }
+                         }
+                         run->page_fault.resume_action = GH_VCPU_RESUME_FAULT;
+                         /*
+-- 
+2.43.0
+

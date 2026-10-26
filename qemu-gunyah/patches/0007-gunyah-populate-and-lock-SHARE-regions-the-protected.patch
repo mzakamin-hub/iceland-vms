@@ -1,0 +1,60 @@
+From af3a43d16e7aefceb2f222c1dadce0e5ef11195e Mon Sep 17 00:00:00 2001
+From: mzak <mzak.amin@gmail.com>
+Date: Sun, 25 Oct 2026 13:57:37 +0300
+Subject: [PATCH] gunyah: populate and lock SHARE regions (the protected VM's
+ swiotlb) before the share
+
+Only resident pages are shared at VM_START. A guest access to a never-touched page of the swiotlb faulted into the
+host driver's demand pager, which can only LEND: 'gunyah_vm_mgr: Failed to provide folio for guest addr ...: -22'
+and qcom_scm 'Assign memory protection call failed -22' in a loop, the fork injected an abort (qemu-3d-run v2
+run A on q90r: the guest stopped 0.16 s into boot; run N took 28 such aborts), and the teardown then WARNed in
+_gunyah_vm_put (reclaim of the half-assigned range). MADV_NOHUGEPAGE + MADV_POPULATE_WRITE (touch fallback) +
+mlock on every non-LEND region of a protected VM, logged as 'GH: SHARE region ... populated before the share'.
+
+Signed-off-by: mzak <mzak.amin@gmail.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ accel/gunyah/gunyah-all.c | 27 +++++++++++++++++++++++++++
+ 1 file changed, 27 insertions(+)
+
+diff --git a/accel/gunyah/gunyah-all.c b/accel/gunyah/gunyah-all.c
+index 80a46e3e..39e861ff 100644
+--- a/accel/gunyah/gunyah-all.c
++++ b/accel/gunyah/gunyah-all.c
+@@ -1057,6 +1057,33 @@ skip_phase3:
+         }
+     }
+ 
++    /*
++     * ICELAND (patch 0007): a SHARE region (the swiotlb / restricted DMA pool of a protected VM) is populated and
++     * locked here too. Only resident pages go into the share at VM_START; a guest access to a page that was never
++     * touched faults into the host driver's demand pager, which can only LEND: "gunyah_vm_mgr: Failed to provide
++     * folio for guest addr ...: -22" plus qcom_scm "Assign memory protection call failed -22", over and over,
++     * and the fork injects an abort (qemu-3d-run v2 run A, 25 Oct: the guest stopped 0.16 s into boot at the
++     * first swiotlb bounce; run N took 28 such aborts). 4 KiB pages (no THP) so no folio straddles the share.
++     */
++    if (!lend && gunyah_is_protected()) {
++        int r1 = madvise(base_hva, total_size, MADV_NOHUGEPAGE);
++        int r2 = madvise(base_hva, total_size, MADV_POPULATE_WRITE);
++        int r3;
++
++        if (r2 != 0) {
++            volatile char *p = (volatile char *)base_hva;
++            uint64_t pg;
++
++            for (pg = 0; pg < total_size / 4096; pg++) {
++                p[pg * 4096] = p[pg * 4096];
++            }
++        }
++        r3 = mlock(base_hva, total_size);
++        error_report("GH: SHARE region gpa=0x%"PRIx64" size=0x%"PRIx64" populated before the share "
++                     "(nohugepage %s, populate %s, mlock %s)", base_gpa, total_size,
++                     r1 ? "failed" : "ok", r2 ? "by touch" : "ok", r3 ? "failed" : "ok");
++    }
++
+     /*
+      * Split large LEND regions into 256MB chunks.
+      *
+-- 
+2.43.0
+

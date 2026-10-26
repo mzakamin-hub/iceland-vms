@@ -1,0 +1,70 @@
+From 660b1f92e2b980bb6684f353f8fb2b16836b149f Mon Sep 17 00:00:00 2001
+From: mzak <mzak.amin@gmail.com>
+Date: Sun, 25 Oct 2026 12:07:29 +0300
+Subject: [PATCH] gunyah: kernel ioeventfd for virtio notifications when
+ gunyah_ioeventfd is loaded (ICELAND_GH_IOEVENTFD)
+
+Every virtqueue kick was a full VCPU_RUN exit into QEMU (MMIO decode under the
+BQL, then the software eventfd). The iceland kernels have gunyah_ioeventfd (the
+module crosvm uses), whose GUNYAH_FN_IOEVENTFD argument matches the fork's
+gh_fn_ioeventfd_arg (uapi-check: 32 bytes, len 0 = any length). The memory
+listener's eventfd_add/del hooks are installed at run time when
+/sys/module/gunyah_ioeventfd exists; ICELAND_GH_IOEVENTFD=0 disables, =1 forces.
+A failed ADD_FUNCTION keeps that notifier on the exit path (QEMU dispatches
+eventfds in software for a non-KVM accelerator).
+
+Signed-off-by: mzak <mzak.amin@gmail.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ accel/gunyah/gunyah-all.c | 28 ++++++++++++++++++++++++++++
+ 1 file changed, 28 insertions(+)
+
+diff --git a/accel/gunyah/gunyah-all.c b/accel/gunyah/gunyah-all.c
+index b705ab9a..80a46e3e 100644
+--- a/accel/gunyah/gunyah-all.c
++++ b/accel/gunyah/gunyah-all.c
+@@ -381,6 +381,33 @@ static MemoryListener gunyah_memory_listener = {
+      */
+ };
+ 
++/*
++ * ICELAND (patch 0006): kernel ioeventfd for virtio notifications. Without it
++ * every virtqueue kick is a full VCPU_RUN exit into this process (MMIO
++ * decode under the BQL, then the software eventfd); with it the kernel
++ * signals the eventfd on the MMIO fault and resumes the vCPU. QEMU-3D on
++ * virgl kicks the control queue per command buffer: glmark2 293 = llvmpipe
++ * (24 Oct) vs crosvm 9253 with ioeventfd + irqfd. The old SIGBUS note above
++ * is about other kernels; iceland kernels have gunyah_ioeventfd (crosvm uses it).
++ * On by default when /sys/module/gunyah_ioeventfd exists (gvm.sh / the app
++ * load it with the other Gunyah modules); ICELAND_GH_IOEVENTFD=0 turns it off,
++ * =1 forces it. A failed ADD_FUNCTION leaves that notifier on the MMIO exit
++ * path (QEMU still dispatches eventfds in software for a non-KVM accel).
++ */
++static void gunyah_ioeventfd_setup(void)
++{
++    const char *e = getenv("ICELAND_GH_IOEVENTFD");
++    bool mod = access("/sys/module/gunyah_ioeventfd", F_OK) == 0;
++    bool on = (e && *e) ? strcmp(e, "0") != 0 : mod;
++
++    if (on) {
++        gunyah_memory_listener.eventfd_add = gunyah_mem_ioeventfd_add;
++        gunyah_memory_listener.eventfd_del = gunyah_mem_ioeventfd_del;
++    }
++    error_report("GH: ioeventfd %s (ICELAND_GH_IOEVENTFD=%s, gunyah_ioeventfd module %s)",
++                 on ? "ON" : "off", e ? e : "unset", mod ? "loaded" : "absent");
++}
++
+ int gunyah_create_vm(void)
+ {
+     GUNYAHState *s;
+@@ -413,6 +440,7 @@ int gunyah_create_vm(void)
+ 
+     gunyah_install_sigsegv_handler();
+ 
++    gunyah_ioeventfd_setup();
+     memory_listener_register(&gunyah_memory_listener, &address_space_memory);
+     return 0;
+ }
+-- 
+2.43.0
+

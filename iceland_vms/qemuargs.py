@@ -1,6 +1,7 @@
 """QEMU-Gunyah (qemu-gunyah/qemu-android-gunyah 10.0.2, ported to Fedora: iceland-qemu-gunyah) command
-line for a validated VM description. EXPERIMENTAL: the backend stays disabled (features.qemu_backend)
-until tablet row Q1 passes.
+line for a validated VM description. 0.2-19: enabled (features qemu_backend + qemu_gl) after qemu-3d-run QG5-QG7
+on q90u; crosvm stays the default backend. The machine line is the one the QG / Q1 rows ran (gic-version=3, guest
+RAM in a shared memfd, virtio-gpu-gl with blob off, the virgl fence sync thread on by default in QEMU patch 0011).
 
 Same protected-VM model as crosvm (from the QEMU-Gunyah evaluation): guest RAM lent with
 GH_VM_ANDROID_LEND_USER_MEM, the top swiotlb-size of -m shared and declared as restricted-dma-pool,
@@ -40,7 +41,7 @@ def build(cfg, res, feats=None):
          # 0.2-9: guest RAM in a shared memfd like crosvm's: with anonymous private RAM the shared swiotlb went
          # through the host's demand-share path and failed -22 (qemu-3d-run p12 / p3 runs A and B)
          "-object", "memory-backend-memfd,id=gram,size=%dM,share=on" % mem_total,
-         "-M", "virt,confidential-guest-support=cg0,memory-backend=gram",
+         "-M", "virt,gic-version=3,confidential-guest-support=cg0,memory-backend=gram",
          "-cpu", "host", "-smp", str(cfg["cpus"]), "-m", "%dM" % mem_total,
          "-qmp", "unix:%s,server=on,wait=off" % res["control_sock"],
          "-chardev", "socket,id=ser0,path=%s" % res["serial_sock"],          # the supervisor listens
@@ -69,7 +70,8 @@ def build(cfg, res, feats=None):
         d = cfg["display"]
         # 0.2-7 (feature qemu_gl, qemu-3d-run v2 QG rows): virgl GL on QEMU = virtio-gpu-gl-pci with blob off (blob /
         # hostmem / venus need GuestAccept, refused by patch 0005 in a protected VM); needs the dmasync guest kernel
-        gl = bool((feats or {}).get("qemu_gl")) and d["gpu"] in ("virgl", "venus", "native", "zink")
+        # 0.2-19: virgl only (venus / zink / native are refused for QEMU by config.backend_conflicts)
+        gl = bool((feats or {}).get("qemu_gl")) and d["gpu"] == "virgl"
         a += ["-device", "%s,xres=%d,yres=%d%s" % ("virtio-gpu-gl-pci" if gl else "virtio-gpu-pci", d["width"],
                                                    d["height"], ",blob=false" if gl else "")]
         if d.get("vnc"):                 # 0.2-7: QEMU's own VNC server, this tablet only (127.0.0.1)

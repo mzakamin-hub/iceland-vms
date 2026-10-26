@@ -1,0 +1,56 @@
+From 640c5931383af42372c169d2124977187b5cb629 Mon Sep 17 00:00:00 2001
+From: iceland <iceland@localhost>
+Date: Mon, 26 Oct 2026 11:32:40 +0300
+Subject: [PATCH] egl-headless: ICELAND_EGL_READBACK=0 skips the per-flush
+ readback (diagnostic)
+
+egl-headless blits every guest flush and reads it back with glReadPixels into
+the 2D console surface. qemu-3d-run QG5 measured glmark2 flat at ~0.72 ms per
+frame for virgl and for llvmpipe in the guest alike; this switch shows whether
+the readback is that per-frame cost. With it VNC / screendump get no frames.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ ui/egl-headless.c | 23 ++++++++++++++++++++++-
+ 1 file changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/ui/egl-headless.c b/ui/egl-headless.c
+index 1f6b8455..f574dfa1 100644
+--- a/ui/egl-headless.c
++++ b/ui/egl-headless.c
+@@ -139,13 +139,34 @@ static void egl_cursor_position(DisplayChangeListener *dcl,
+     edpy->pos_y = pos_y;
+ }
+ 
++/*
++ * ICELAND (patch 0010): ICELAND_EGL_READBACK=0 skips the blit + glReadPixels of
++ * every guest flush into the 2D console surface (VNC / screendump then show no
++ * new frames). Diagnostic for qemu-3d-run: is the per-flush readback what
++ * limits virgl in egl-headless (QG5: glmark2 flat at ~0.72 ms per frame for
++ * virgl and llvmpipe alike)?
++ */
++static bool egl_readback_off(void)
++{
++    static int off = -1;
++
++    if (off < 0) {
++        const char *e = getenv("ICELAND_EGL_READBACK");
++
++        off = e && !strcmp(e, "0");
++        error_report("GH-EGL: per-flush readback %s (ICELAND_EGL_READBACK=%s)",
++                     off ? "OFF" : "on", e ? e : "unset");
++    }
++    return off;
++}
++
+ static void egl_scanout_flush(DisplayChangeListener *dcl,
+                               uint32_t x, uint32_t y,
+                               uint32_t w, uint32_t h)
+ {
+     egl_dpy *edpy = container_of(dcl, egl_dpy, dcl);
+ 
+-    if (!edpy->guest_fb.texture || !edpy->ds) {
++    if (!edpy->guest_fb.texture || !edpy->ds || egl_readback_off()) {
+         return;
+     }
+     assert(surface_format(edpy->ds) == PIXMAN_x8r8g8b8);

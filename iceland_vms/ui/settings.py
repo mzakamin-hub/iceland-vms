@@ -80,8 +80,8 @@ class SettingsPage(Gtk.Box):
         auto = config.BACKEND_LABEL[config.resolve_backend(c, f)]
         self.backend = util.combo_row("Backend", [("auto", "Automatic (%s)" % auto), ("crosvm", "crosvm"),
                                                   ("qemu", "QEMU-Gunyah")],
-                                      subtitle="Automatic: QEMU-Gunyah only for USB passthrough, crosvm otherwise "
-                                      "(3D, display window, everything else)")
+                                      subtitle="Automatic: QEMU-Gunyah only for USB passthrough, crosvm otherwise. "
+                                      "QEMU-Gunyah runs 3D OpenGL (about 80 % of crosvm's speed), not Vulkan")
         util.combo_set(self.backend, c["backend"])
         # without a usable QEMU-Gunyah there is nothing to choose: crosvm only
         self.backend.set_visible(bool(f["qemu_backend"]) or c["backend"] == "qemu")
@@ -151,6 +151,7 @@ class SettingsPage(Gtk.Box):
             shared = util.combo_key(self.memmode) == "shared"
             self.memmode_warn.set_visible(shared)
             self.swiotlb.set_sensitive(not shared)
+            self._shared_gpu_guard()
         self.memmode.connect("notify::selected", _memmode_changed)
         _memmode_changed()
         self.mem_note = util.info_row("Larger than tested",
@@ -254,6 +255,15 @@ class SettingsPage(Gtk.Box):
                                   subtitle="3D needs iceland-gvm 0.2 and is enabled once the V4 test passes")
         util.combo_set(self.gpu, c["display"]["gpu"])
         g.add(self.gpu)
+        # 0.2-19: no 3D with the shared memory mode: the display falls back to the software display, with the reason;
+        # 0.2-20: 3D OpenGL is allowed there (feature memory_shared_3d), Vulkan / native still fall back
+        self.shared_gpu_note = util.info_row("Software display: shared memory has no 3D Vulkan / native context yet",
+                                             config.SHARED_3D_REASON if f.get("memory_shared_3d")
+                                             else config.SHARED_3D_FEATURE_REASON, "dialog-information-symbolic")
+        self.shared_gpu_note.set_visible(False)
+        g.add(self.shared_gpu_note)
+        self.gpu.connect("notify::selected", lambda *_: self._shared_gpu_guard())
+        self._shared_gpu_guard()
         self.width = util.spin_row("Width", None, 640, 3840, 8, c["display"]["width"])
         self.height = util.spin_row("Height", None, 480, 3000, 8, c["display"]["height"])
         self.dpi = util.spin_row("DPI (0 = default)", "Larger text in the guest on the tablet's dense screen", 0, 600, 10,
@@ -387,9 +397,9 @@ class SettingsPage(Gtk.Box):
         rb = config.resolve_backend(c, self.feats)
         self.backend.get_model().splice(0, 1, ["Automatic (%s)" % config.BACKEND_LABEL[
             config.resolve_backend(dict(c, backend="auto"), self.feats)]])
-        bad = config.backend_conflicts(c, rb)
+        bad = config.backend_conflicts(c, rb, self.feats)
         other = "crosvm" if rb == "qemu" else "qemu"
-        can_switch = bad and not config.backend_conflicts(dict(c, backend=other), other) and             (other == "crosvm" or self.feats["qemu_backend"])
+        can_switch = bad and not config.backend_conflicts(dict(c, backend=other), other, self.feats) and             (other == "crosvm" or self.feats["qemu_backend"])
         self.conflict.set_visible(bool(bad))
         if bad:
             self.conflict.set_title("%s cannot provide %s" % (config.BACKEND_LABEL[rb], ", ".join(bad)))
@@ -652,6 +662,19 @@ class SettingsPage(Gtk.Box):
         dlg.select_folder(self.win, None, done)
 
     # ---- apply ----
+    def _shared_gpu_guard(self):
+        """Shared memory + a 3D display it cannot run: switch to the software display and say why (0.2-19; 0.2-20:
+        3D OpenGL stays when the tablet has memory_shared_3d)."""
+        if not hasattr(self, "gpu") or not hasattr(self, "memmode"):
+            return                                  # called while the pages are still being built
+        shared = util.combo_key(self.memmode) == "shared"
+        refused = config.SHARED_3D_BLOCKED if self.feats.get("memory_shared_3d") else config.GPU_3D
+        if shared and util.combo_key(self.gpu) in refused:
+            util.combo_set(self.gpu, "simplefb")
+            self.shared_gpu_note.set_visible(True)
+        elif not shared:
+            self.shared_gpu_note.set_visible(False)
+
     def collect(self):
         c = copy.deepcopy(self.cfg)
         c["name"] = self.name.get_text().strip()
