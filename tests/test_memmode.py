@@ -16,7 +16,7 @@ FEATS = {"gpu3d_venus": True, "gpu3d_virgl": True, "simplefb": True, "gpu2d": Tr
 class MemoryMode(unittest.TestCase):
     def test_default_protected(self):
         self.assertEqual(config.default_config("a", "A")["memory_mode"], "protected")
-        self.assertFalse(host.DEFAULT_FEATURES["memory_shared"])
+        self.assertTrue(host.DEFAULT_FEATURES["memory_shared"])      # unlocked in 0.2-18; still opt-in per VM
 
     def test_old_file_filled(self):
         c = fedora_cfg()

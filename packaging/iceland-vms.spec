@@ -2,13 +2,13 @@
 # Built from a source tarball of this repository plus fw/out (the edk2-gunyah build, see fw/BUILD.md) on Fedora 44.
 Name:           iceland-vms
 Version:        0.2
-Release:        17%{?dist}
+Release:        18%{?dist}
 Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm)
 License:        GPL-2.0-only AND BSD-2-Clause-Patent
 BuildArch:      noarch
 Source0:        iceland-vms-%{version}.tar.gz
 BuildRequires:  make, python3
-Requires:       iceland-gvm >= 0.3-49
+Requires:       iceland-gvm >= 0.3-55
 Requires:       python3-gobject, gtk4, libadwaita
 Requires:       polkit, systemd, NetworkManager, firewalld
 Requires:       dosfstools, mtools, openssl, openssh-clients, xz, zstd, coreutils
@@ -44,6 +44,11 @@ make install DESTDIR=%{buildroot} PREFIX=/usr FW=fw/out
 /usr/share/doc/iceland-vms
 
 %changelog
+* Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-18
+- Settings > Memory > Memory protection: "Shared with the tablet" is available (feature memory_shared on: the shared
+  memory mode passed its tablet rows on 26 Oct). Opt-in per VM, Protected stays the default, and the warning that
+  the tablet can read the VM's memory is shown whenever Shared is selected. Needs iceland-gvm >= 0.3-55
+
 * Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-17
 - repack, no code change: the edk2-gunyah firmware rebuilt from a neutral build path (no build-machine path inside
   the .fd files; fw/SHA256SUMS regenerated); a comment and two guest-tool globs no longer spell a home path literally;

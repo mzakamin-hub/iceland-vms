@@ -9,7 +9,7 @@ hypervisor). crosvm, the guest kernel and the command-line tool come from the co
 [iceland-gvm](https://github.com/mzakamin-hub/iceland-gvm); the host kernel's Gunyah modules come with the kernel
 from [iceland-linux](https://github.com/mzakamin-hub/iceland-linux).
 
-App id: `org.iceland.VirtualMachines`. Current version: **0.2-17** (with iceland-gvm 0.3-49).
+App id: `org.iceland.VirtualMachines`. Current version: **0.2-18** (with iceland-gvm 0.3-55).
 
 ## What works
 
@@ -34,6 +34,20 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-17** (with iceland
   | vhost-net (default) | 2877 MB/s | 4761 MB/s |
 - **Performance defaults**: guest memory in 2 MiB pages; io_uring for every disk; the shared I/O bounce buffer is
   limited to 320 MiB (larger pools cannot be set up by the guest kernel).
+- **Shared memory mode (opt-in per VM, software display or headless)**: Settings > Memory > Memory protection >
+  "Shared with the tablet". The VM still runs under Gunyah, but its RAM is shared with the tablet instead of lent:
+  a small boot shim accepts the memory and starts the kernel, so there is no I/O bounce buffer and devices reach
+  guest memory directly. **The tablet can read and change all of that VM's memory** (the app shows this warning
+  whenever the mode is selected); Protected stays the default for every VM. Use it with the software display or
+  without a display; 3D graphics in this mode is not supported yet. It is not uniformly faster - measured on the
+  tablet against the same VM in the protected mode:
+
+  | | shared | protected | |
+  |---|---|---|---|
+  | disk write (256 MiB, fsync) | 260 MB/s | 397 MB/s | -35 % |
+  | disk read (cold) | 450 MB/s | 430 MB/s | about the same |
+  | network guest -> host | 4494 MB/s | 2611 MB/s | +72 % |
+  | network host -> guest | 1484 MB/s | 1940 MB/s | -23 % |
 - **Windows 11 (arm64)**: import a prepared image, start it, connect with the Remote Desktop button (KRDC, Remmina
   or FreeRDP to the guest's address) and reach the guest over ssh (the image's OpenSSH server). Shut Windows down
   from inside Windows, or use Force Off; the app's clean Shut Down follows in a later release.
@@ -44,10 +58,10 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-17** (with iceland
 ## Requirements and install
 
 kernel-iceland q90u or newer with the Gunyah modules (vhost-net needs q90s or newer; older kernels fall back to
-crosvm's own network) and iceland-gvm 0.3-49.
+crosvm's own network) and iceland-gvm 0.3-55.
 
 ```bash
-sudo dnf install ./iceland-gvm-0.3-49.fc44.aarch64.rpm ./iceland-vms-0.2-17.fc44.noarch.rpm
+sudo dnf install ./iceland-gvm-0.3-55.fc44.aarch64.rpm ./iceland-vms-0.2-18.fc44.noarch.rpm
 ```
 
 Then start "Virtual Machines" from the application menu.

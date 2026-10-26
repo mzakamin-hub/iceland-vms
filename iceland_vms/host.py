@@ -23,7 +23,7 @@ DEFAULT_FEATURES = {
     "sound": False,             # crosvm has no PipeWire backend
     "qemu_backend": False,      # qemu-gunyah: evaluation only
     "qemu_gl": False,           # 0.2-7: virgl GL on QEMU (virtio-gpu-gl-pci, egl-headless / gtk gl=on): QG rows pending
-    "memory_shared": False,     # 0.2-10: shared (pseudo-unprotected) memory mode, boot shim (gvm.sh pvm rows PV*)
+    "memory_shared": True,      # 0.2-18: shared (pseudo-unprotected) memory mode, PV-A-1..7 PASS 26 Oct (pvm53, q90u)
     "max_running": 1,           # one VM at a time (Gunyah RM / memory)
     "min_battery_percent": 20,  # refuse a start below this when not charging
     "stop_battery_percent": 8,  # running VMs are shut down below this when not charging
