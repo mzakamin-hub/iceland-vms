@@ -33,10 +33,10 @@ class GuestMesa(unittest.TestCase):
         p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "guest-tools", "gvm-agent")
         with open(p) as f:
             s = f.read()
-        self.assertIn('ls "$share/native" "$share/tools/native"', s)   # the app shares the tools dir itself
+        self.assertIn('[ -f "$ft/native" ] && [ -n "$nt" ] && [ -n "$nos" ]', s)   # 0.2-24: Fedora 44+ only
         self.assertIn("/usr/lib64/iceland-nctx", s)
-        self.assertIn("VK_DRIVER_FILES=$nd/freedreno_icd.json", s)
-        self.assertIn("GVM_AGENT_UPDATED=1 exec /usr/local/sbin/gvm-agent --setup", s)
+        self.assertIn('echo "$nd" > "$nc" && ldconfig', s)            # 0.2-25: the loader, not the environment
+        self.assertIn('GVM_AGENT_UPDATED=1 exec /usr/local/sbin/gvm-agent "$mode"', s)
 
 
 if __name__ == "__main__":

@@ -5,80 +5,106 @@
 # crosvm's power button does nothing for arm64 device-tree guests, so this is the clean-stop path.
 #
 # gvm-agent --setup (ExecStartPre, before the display manager): applies the host's per-run desktop flags
-# from the 9p share (tag gvmshare, directory tools/):
+# from the 9p share (tag gvmshare; the app shares its tools dir itself, so the flags are at the share's top; gvm.sh
+# shares a dir with tools/ - 0.2-24: both layouts, before only tools/ was read, so the app's flags never applied).
+# Every run lists the flags it found in /run/gvm-agent.flags.
+# gvm-agent --refresh (0.2-24; the app runs it over ssh in a running guest after installing a newer agent): the same
+# setup, then the display manager is restarted when its configuration changed and no desktop session is open
+# (so an existing VM's greeter turns into the autologin desktop at once).
 #   noglamor   -> /etc/X11/xorg.conf.d/20-iceland-noglamor.conf (Xorg modesetting without glamor), else removed
 #   wayland    -> the autologin session is a Wayland one (labwc preferred) instead of Xorg
-#   zink       -> lightdm starts Xorg with MESA_LOADER_DRIVER_OVERRIDE=zink (+ profile.d for the session)
+#   zink       -> GL through zink over venus for every program on the virtio-gpu device, Xorg included: a Mesa
+#                 driconf file (/usr/share/drirc.d/99-iceland-zink.conf, loader option dri_driver=zink for the
+#                 virtio_gpu kernel driver). 0.2-25: no lightdm xserver-command any more (kit-vm24b: lightdm
+#                 started no X server with "xserver-command=env ... X"; V5Z earlier: "zink no session")
 #   native     -> the msm native context: the share's nctx-mesa-*.tar.gz (freedreno with the virtio KMD) is unpacked
-#                 under /usr/lib64/iceland-nctx and Xorg / profile.d / environment.d point GL, GBM and Vulkan at it
+#                 under /usr/lib64/iceland-nctx and made the system's Mesa for this boot's mode through
+#                 /etc/ld.so.conf.d/iceland-nctx.conf + ldconfig (searched before /usr/lib64: Xorg, the display
+#                 manager, Wayland compositors and every session use it) + a Vulkan ICD file; Fedora's Mesa files
+#                 are not touched and the files are removed again in other modes (Fedora 44+ aarch64 guests only)
+# gvm-agent --dmcheck (0.2-25; started 25 s after a --refresh that restarted the display manager): if no desktop
+# session came up, the guest is rebooted once (fresh boots only; the agent's setup then applies everything before
+# the display manager starts, the path proven by kit-vm24 A-5).
 # A newer gvm-agent in the share replaces the installed one first (0.2-23).
 #   autologin  -> autologin of the cloud-init user in lightdm / GDM (touch / the host OSK cannot type into a
 #                 greeter in the VM window), else our autologin drop-ins are removed
-if [ "${1:-}" = --setup ]; then
+if [ "${1:-}" = --setup ] || [ "${1:-}" = --refresh ]; then
+	mode=$1
 	share=/mnt/gvmshare
 	mkdir -p "$share"
 	mountpoint -q "$share" || mount -t 9p -o trans=virtio,version=9p2000.L,ro gvmshare "$share" 2>/dev/null
+	ft=$share/tools; [ -d "$ft" ] || ft=$share
+	dmconf() { cat /etc/lightdm/lightdm.conf.d/5*-iceland-*.conf /etc/gdm/custom.conf /etc/X11/xorg.conf.d/20-iceland-noglamor.conf \
+		/usr/share/drirc.d/99-iceland-zink.conf /etc/ld.so.conf.d/iceland-nctx.conf 2>/dev/null | cksum; }
+	dm0=$(dmconf)
 	# 0.2-23: the app's agent is newer than the installed one (new flags such as native): install it and run its setup
 	# (the app shares its tools dir itself as gvmshare: files at the share's top; gvm.sh shares a dir with tools/)
 	na=$(ls "$share/gvm-agent" "$share/tools/gvm-agent" 2>/dev/null | head -n1)
 	if [ -z "${GVM_AGENT_UPDATED:-}" ] && [ -n "$na" ] && ! cmp -s "$na" /usr/local/sbin/gvm-agent; then
 		install -m 755 "$na" /usr/local/sbin/gvm-agent && echo "gvm-agent: updated from the host"
-		GVM_AGENT_UPDATED=1 exec /usr/local/sbin/gvm-agent --setup
+		GVM_AGENT_UPDATED=1 exec /usr/local/sbin/gvm-agent "$mode"
 	fi
+	fl=""
+	for f in noglamor autologin wayland zink native; do [ -f "$ft/$f" ] && fl="$fl $f"; done
+	echo "flags:${fl:- none} (share $ft, $mode, agent $(cksum < /usr/local/sbin/gvm-agent 2>/dev/null | cut -d' ' -f1))" > /run/gvm-agent.flags
+	echo "gvm-agent: flags:${fl:- none}"
 	user=$(awk -F: '$3 >= 1000 && $3 < 60000 && $7 !~ /nologin|false/ {print $1; exit}' /etc/passwd)
 	x=/etc/X11/xorg.conf.d/20-iceland-noglamor.conf
-	if [ -f "$share/tools/noglamor" ]; then
+	if [ -f "$ft/noglamor" ]; then
 		mkdir -p /etc/X11/xorg.conf.d
 		printf 'Section "Device"\n\tIdentifier "iceland-virtio-gpu"\n\tDriver "modesetting"\n\tOption "AccelMethod" "none"\nEndSection\n' > "$x"
 	else
 		rm -f "$x"
 	fi
-	# zink: the guest's Xorg (glamor) and the session's GL through zink over venus (Vulkan) instead of virgl
-	z=/etc/lightdm/lightdm.conf.d/51-iceland-zink.conf
-	zp=/etc/profile.d/iceland-zink.sh
-	if [ -f "$share/tools/zink" ] && [ -d /etc/lightdm ]; then
-		mkdir -p /etc/lightdm/lightdm.conf.d
-		printf '[Seat:*]\nxserver-command=env MESA_LOADER_DRIVER_OVERRIDE=zink X\n' > "$z"
-		printf 'export MESA_LOADER_DRIVER_OVERRIDE=zink\n' > "$zp"
+	# zink: the guest's Xorg (glamor) and the sessions' GL through zink over venus (Vulkan) instead of virgl
+	# (0.2-24's lightdm xserver-command / profile.d files are removed)
+	rm -f /etc/lightdm/lightdm.conf.d/51-iceland-zink.conf /etc/profile.d/iceland-zink.sh
+	zc=/usr/share/drirc.d/99-iceland-zink.conf
+	if [ -f "$ft/zink" ]; then
+		mkdir -p /usr/share/drirc.d
+		printf '%s\n' '<?xml version="1.0"?>' '<!-- iceland-vms gvm-agent: zink for the virtio-gpu device (zink flag) -->' \
+			'<driconf>' '  <device driver="loader" kernel_driver="virtio_gpu">' \
+			'    <application name="iceland-vms zink" executable_regexp=".*">' \
+			'      <option name="dri_driver" value="zink" />' '    </application>' '  </device>' '</driconf>' > "$zc"
 	else
-		rm -f "$z" "$zp"
+		rm -f "$zc"
 	fi
 	# native: the msm native context needs a Mesa whose freedreno has the virtio KMD (Fedora's has msm only, so
 	# fd_device_new() refuses the virtio_gpu device and GL falls back to llvmpipe). The host's iceland-vms-guest-mesa
 	# puts nctx-mesa-*.tar.gz in the share; it is unpacked under /usr/lib64/iceland-nctx (Fedora's Mesa is untouched)
-	# and Xorg, the login shells and the systemd user sessions use it through the environment while the flag is set
+	# 0.2-25: the dynamic loader, not the environment, selects it (kit-vm24b N-4: profile.d reached shells, but Xorg
+	# glamor stayed on virgl: lightdm gives the X server its own environment)
 	nd=/usr/lib64/iceland-nctx
-	nl=/etc/lightdm/lightdm.conf.d/52-iceland-nctx.conf
-	np=/etc/profile.d/iceland-nctx.sh
-	ne=/etc/environment.d/60-iceland-nctx.conf
-	nf=$(ls "$share/native" "$share/tools/native" 2>/dev/null | head -n1)
-	nt=$(ls "$share"/nctx-mesa-*.tar.gz "$share"/tools/nctx-mesa-*.tar.gz 2>/dev/null | tail -n1)
-	if [ -n "$nf" ] && [ -n "$nt" ]; then
+	nc=/etc/ld.so.conf.d/iceland-nctx.conf
+	nj=/etc/vulkan/icd.d/iceland-nctx-freedreno.json
+	# 0.2-23 / 0.2-24 files (environment based): always removed
+	rm -f /etc/lightdm/lightdm.conf.d/52-iceland-nctx.conf /etc/profile.d/iceland-nctx.sh /etc/environment.d/60-iceland-nctx.conf
+	nt=$(ls "$ft"/nctx-mesa-*.tar.gz 2>/dev/null | tail -n1)
+	nos=$(. /etc/os-release 2>/dev/null; [ "${ID:-}" = fedora ] && [ "${VERSION_ID:-0}" -ge 44 ] 2>/dev/null && [ "$(uname -m)" = aarch64 ] && echo ok)
+	[ -f "$ft/native" ] && [ -z "$nos" ] && echo "gvm-agent: native flag, but the guest Mesa is for Fedora 44+ aarch64: not used"
+	if [ -f "$ft/native" ] && [ -n "$nt" ] && [ -n "$nos" ]; then
 		ns=$(sha256sum "$nt" | cut -d' ' -f1)
 		if [ "$(cat $nd/.sha256 2>/dev/null)" != "$ns" ]; then
 			rm -rf "$nd" && tar -xzf "$nt" -C / && echo "$ns" > "$nd/.sha256" && echo "gvm-agent: guest Mesa $(basename "$nt") unpacked"
 		fi
-		if [ -f "$nd/.sha256" ]; then
-			nv="LD_LIBRARY_PATH=$nd LIBGL_DRIVERS_PATH=$nd/dri GBM_BACKENDS_PATH=$nd/gbm VK_DRIVER_FILES=$nd/freedreno_icd.json"
-			mkdir -p /etc/environment.d
-			printf '%s\n' $nv > "$ne"
-			printf 'export %s\n' $nv > "$np"
-			if [ -d /etc/lightdm ]; then
-				mkdir -p /etc/lightdm/lightdm.conf.d
-				printf '[Seat:*]\nxserver-command=env %s X\n' "$nv" > "$nl"
+		if [ -f "$nd/.sha256" ] && [ -f "$nd/libgallium-26.2.5.so" ]; then
+			if [ "$(cat "$nc" 2>/dev/null)" != "$nd" ]; then
+				echo "$nd" > "$nc" && ldconfig && echo "gvm-agent: guest Mesa $nd active (ld.so.conf.d)"
 			fi
+			mkdir -p /etc/vulkan/icd.d
+			cp -f "$nd/freedreno_icd.json" "$nj"
 		fi
-	else
-		rm -f "$nl" "$np" "$ne"
+	elif [ -f "$nc" ] || [ -f "$nj" ]; then
+		rm -f "$nc" "$nj" && ldconfig && echo "gvm-agent: guest Mesa off (Fedora's Mesa again)"
 	fi
 	l=/etc/lightdm/lightdm.conf.d/50-iceland-autologin.conf
 	g=/etc/gdm/custom.conf.d-iceland-autologin
-	if [ -f "$share/tools/autologin" ] && [ -n "$user" ]; then
+	if [ -f "$ft/autologin" ] && [ -n "$user" ]; then
 		if [ -d /etc/lightdm ]; then
 			mkdir -p /etc/lightdm/lightdm.conf.d
 			s=$(ls /usr/share/xsessions 2>/dev/null | sed -n 's/\.desktop$//p' | head -n1)
 			# wayland flag: autologin into a Wayland session (labwc preferred) instead of Xorg (V6, 24 Oct)
-			if [ -f "$share/tools/wayland" ]; then
+			if [ -f "$ft/wayland" ]; then
 				# v10e: Fedora 44's labwc ships no session file (v10d V5WS: /usr/share/wayland-sessions empty, so the
 				# "labwc" rows ran Xfce); write the standard one when labwc is installed
 				if [ -x /usr/bin/labwc ] && ! ls /usr/share/wayland-sessions/*.desktop > /dev/null 2>&1; then
@@ -122,7 +148,7 @@ if [ "${1:-}" = --setup ]; then
 	# wayland) and runs labwc with a terminal; lightdm is masked for this boot only (--runtime), so without the
 	# flag the next boot is the normal Xorg desktop again.
 	wu=/etc/systemd/system/gvm-wayland-session.service
-	if [ -f "$share/tools/wayland" ] && [ -x /usr/bin/labwc ] && [ -n "$user" ]; then
+	if [ -f "$ft/wayland" ] && [ -x /usr/bin/labwc ] && [ -n "$user" ]; then
 		h=$(getent passwd "$user" | cut -d: -f6)
 		mkdir -p "$h/.config/labwc"
 		[ -f "$h/.config/labwc/autostart" ] || printf '%s\n' "command -v foot > /dev/null && foot --maximized &" > "$h/.config/labwc/autostart"
@@ -199,6 +225,44 @@ EOF
 			systemctl daemon-reload
 		fi
 		systemctl unmask --runtime display-manager.service > /dev/null 2>&1
+	fi
+	# --refresh in a running guest: apply a changed display-manager configuration now unless a desktop is in use
+	if [ "$mode" = --refresh ] && [ "$(dmconf)" != "$dm0" ] && ! [ -f "$wu" -a -f "$ft/wayland" ]; then
+		busy=""
+		for sid in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+			t=$(loginctl show-session "$sid" -p Type --value 2>/dev/null); c=$(loginctl show-session "$sid" -p Class --value 2>/dev/null)
+			[ "$c" = user ] && { [ "$t" = x11 ] || [ "$t" = wayland ]; } && busy=$sid
+		done
+		if [ -z "$busy" ]; then
+			echo "gvm-agent: display manager configuration changed: restarting it"
+			systemctl restart display-manager.service
+			# fallback: no desktop 25 s later -> one reboot (gvm-agent --dmcheck)
+			systemd-run --quiet --collect --unit=gvm-agent-dmcheck --on-active=25 /usr/local/sbin/gvm-agent --dmcheck \
+				> /dev/null 2>&1 || true
+		else
+			echo "gvm-agent: display manager configuration changed; desktop session $busy is open: applies at the next boot"
+		fi
+	fi
+	exit 0
+fi
+if [ "${1:-}" = --dmcheck ]; then
+	# after a --refresh restarted the display manager: no desktop session (x11 / wayland, class user) -> reboot once.
+	# Only on a fresh boot (uptime < 10 min: the refresh runs right after the app reaches ssh) and once per
+	# configuration (stamp), so it can never loop.
+	for sid in $(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $1}'); do
+		t=$(loginctl show-session "$sid" -p Type --value 2>/dev/null); c=$(loginctl show-session "$sid" -p Class --value 2>/dev/null)
+		[ "$c" = user ] && { [ "$t" = x11 ] || [ "$t" = wayland ]; } && { echo "gvm-agent: desktop session $sid is up"; exit 0; }
+	done
+	up=$(cut -d. -f1 /proc/uptime 2>/dev/null); up=${up:-999999}
+	st=/var/lib/gvm-agent/dmcheck-reboot
+	k=$(cat /etc/lightdm/lightdm.conf.d/5*-iceland-*.conf /etc/gdm/custom.conf /usr/share/drirc.d/99-iceland-zink.conf \
+		/etc/ld.so.conf.d/iceland-nctx.conf 2>/dev/null | cksum)
+	if [ "$up" -lt 600 ] && [ "$(cat "$st" 2>/dev/null)" != "$k" ] && systemctl is-enabled display-manager.service > /dev/null 2>&1; then
+		mkdir -p /var/lib/gvm-agent && echo "$k" > "$st"
+		echo "gvm-agent: no desktop session after the display manager restart: rebooting once to apply the settings"
+		systemctl reboot
+	else
+		echo "gvm-agent: no desktop session; no reboot (uptime $up s, already rebooted for this configuration, or no display manager)"
 	fi
 	exit 0
 fi

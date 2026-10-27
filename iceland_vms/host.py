@@ -17,7 +17,7 @@ DEFAULT_FEATURES = {
     "gpu2d": True,              # V3 PASSED 23 Oct 2026 (connector connected, crosvm xdg_toplevel on Mutter)
     "uefi": True,               # edk2-gunyah: untested on the tablet (shown as such in the UI)
     "gpu3d_virgl": True,        # V4 24 Oct: virgl GL on the Adreno 840 in the guest, glmark2 9253 / 9282 (0.3-8)
-    "gpu3d_native": False,
+    "gpu3d_native": True,      # 0.2-24 (kit-vm23 N3: Adreno 840, glmark2 2691)
     "simplefb": True,           # vm-run v8 (q90r, 24 Oct): V8-0..5 PASS: guest simpledrm, host frame drawn, window
     "gpu3d_venus": True,        # 0.3-8 24 Oct: VKBLOBTEST PASS (136 MiB through host-visible coherent memory, 9 accepts) = GuestAccept proven
     "sound": False,             # crosvm has no PipeWire backend

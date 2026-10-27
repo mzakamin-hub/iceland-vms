@@ -43,7 +43,7 @@ GPU_ITEMS = [("venus", "3D: OpenGL (virgl) + Vulkan (venus) - recommended"),
              ("none", "None (serial console only)"), ("2d", "2D window (virtio-gpu)"),
              ("virgl", "3D: OpenGL only (virgl)"),
              ("zink", "3D: Vulkan (venus), OpenGL through zink (experimental, DroidVM-style)"),
-             ("native", "3D: msm native context (experimental: Fedora guests, guest Mesa from iceland-vms-guest-mesa)")]
+             ("native", "3D: native GPU (msm native context: GL + Vulkan on the Adreno; Fedora 44+ guests)")]
 GPU_FEATURE = {"virgl": "gpu3d_virgl", "native": "gpu3d_native", "venus": "gpu3d_venus", "zink": "gpu3d_venus",
                "simplefb": "simplefb"}
 

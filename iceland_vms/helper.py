@@ -507,6 +507,76 @@ def virtio_key_tap(code=KEY_POWER):
     return ev(EV_KEY, code, 1) + ev(EV_SYN, 0, 0) + ev(EV_KEY, code, 0) + ev(EV_SYN, 0, 0)
 
 
+AGENT_REFRESH_CMD = (
+    "sudo -n sh -c 'mkdir -p /mnt/gvmshare; mountpoint -q /mnt/gvmshare || "
+    "mount -t 9p -o trans=virtio,version=9p2000.L,ro gvmshare /mnt/gvmshare; a=/mnt/gvmshare/gvm-agent; "
+    "[ -f $a ] || { echo AGENT-NOSHARE; exit 3; }; "
+    "cmp -s $a /usr/local/sbin/gvm-agent && { echo AGENT-CURRENT; exit 0; }; "
+    "install -m 755 $a /usr/local/sbin/gvm-agent && echo AGENT-UPDATED && "
+    "GVM_AGENT_UPDATED=1 /usr/local/sbin/gvm-agent --refresh 2>&1 | tail -n 4'")
+
+
+class AgentRefresh:
+    """0.2-24: guests whose gvm-agent predates the share's (before 0.2-23 an agent could not update itself, and before
+    0.2-24 it read its flags from tools/ of the share, where the app never put them) get the app's agent once ssh
+    answers: installed over ssh with the app's key AS THE VM's OWNER (cloud-init user, passwordless sudo), then
+    `gvm-agent --refresh` applies the flags now (autologin, noglamor, wayland, zink, native) and restarts the display
+    manager when its configuration changed and no desktop session is open. Agents >= 0.2-23 update themselves at boot,
+    so this normally logs "up to date"."""
+    CAP = 600
+
+    def __init__(self, sup):
+        self.sup = sup
+        threading.Thread(target=self.loop, name="agent-refresh", daemon=True).start()
+
+    def ip(self):
+        return self.sup.state.get("ip") or gvmlib.lease_ip(self.sup.cfg["network"]["mac"])
+
+    def ssh(self, cmd, timeout=90):
+        pw = self.sup.pw
+        argv = ["ssh", "-i", os.path.join(config.data_home(pw.pw_dir), "ssh", "id_ed25519"), "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-o", "LogLevel=ERROR",
+                "-o", "IdentitiesOnly=yes", "%s@%s" % (self.sup.cfg["cloud_init"]["user"], self.ip()), cmd]
+        env = {"HOME": pw.pw_dir, "USER": pw.pw_name, "LOGNAME": pw.pw_name, "PATH": "/usr/bin:/bin"}
+        try:
+            r = subprocess.run(argv, user=pw.pw_uid, group=pw.pw_gid, extra_groups=[], cwd=pw.pw_dir, env=env,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=timeout,
+                               start_new_session=True, close_fds=True)
+            return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip().replace(chr(10), " ")[:200]
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return -1, "", str(e)[:200]
+
+    def loop(self):
+        t0, tries = time.time(), 0
+        while time.time() - t0 < self.CAP:
+            if self.sup.state.get("state") in ("stopping", "stopped", "failed"):
+                return
+            ip = self.ip()
+            up = False
+            if ip:
+                try:
+                    with socket.create_connection((ip, 22), timeout=2):
+                        up = True
+                except OSError:
+                    up = False
+            if up:
+                tries += 1
+                rc, out, err = self.ssh(AGENT_REFRESH_CMD)
+                if rc == 0 and "AGENT-CURRENT" in out:
+                    self.sup.log("guest agent: up to date")
+                    return
+                if rc == 0 and "AGENT-UPDATED" in out:
+                    self.sup.log("guest agent: updated over ssh and applied: %s"
+                                 % " | ".join(ln for ln in out.splitlines() if ln and ln != "AGENT-UPDATED")[-300:])
+                    return
+                if "AGENT-NOSHARE" in out or tries >= 4:
+                    self.sup.log("guest agent: not refreshed (rc %d): %s" % (rc, (out or err or "-")[-200:]))
+                    return
+                time.sleep(10)          # cloud-init may still be setting up the user / sudo
+            else:
+                time.sleep(3)
+
+
 class WinAgent:
     """0.2-12: the clean-shutdown "agent" of a Windows guest (no virtio-console driver in Windows).
 
@@ -1080,6 +1150,9 @@ class Supervisor:
         else:
             self.agent = Agent(self.rdir, self.log)
             self.res["agent_sock"] = self.agent.path
+            if (self.cfg["cloud_init"]["enabled"] and self.cfg["guest_tools"]
+                    and self.cfg["network"]["mode"] == "nat"):
+                AgentRefresh(self)             # 0.2-24: bring an older guest agent up to date (flags, native Mesa)
         self.inhibit = subprocess.Popen(["systemd-inhibit", "--what=idle", "--mode=block", "--who=Virtual Machines",
                                          "--why=Virtual machine %s is running" % self.cfg["name"], "sleep", "infinity"],
                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -2,18 +2,18 @@
 # Built from a source tarball of this repository plus fw/out (the edk2-gunyah build, see fw/BUILD.md) on Fedora 44.
 Name:           iceland-vms
 Version:        0.2
-Release:        23%{?dist}
+Release:        25%{?dist}
 Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm, QEMU-Gunyah)
 License:        GPL-2.0-only AND BSD-2-Clause-Patent
 BuildArch:      noarch
 Source0:        iceland-vms-%{version}.tar.gz
 BuildRequires:  make, python3
 Requires:       iceland-gvm >= 0.3-59
+Requires:       iceland-vms-guest-mesa >= 26.2.5-1.iceland1
 Requires:       python3-gobject, gtk4, libadwaita
 Requires:       polkit, systemd, NetworkManager, firewalld
 Requires:       dosfstools, mtools, openssl, openssh-clients, xz, zstd, coreutils
 Recommends:     vte291-gtk4, qemu-img, iceland-qemu-gunyah >= 10.0.2-1
-Suggests:       iceland-vms-guest-mesa
 Suggests:       krdc, tigervnc
 
 %description
@@ -45,6 +45,32 @@ make install DESTDIR=%{buildroot} PREFIX=/usr FW=fw/out
 /usr/share/doc/iceland-vms
 
 %changelog
+* Tue Oct 27 2026 mzak <mzak.amin@gmail.com> - 0.2-25
+- guest agent, settings that change the display server (kit-vm24b B-4 / B-5 / N-4 / N-5 on q90w2): lightdm
+  started no X server when its xserver-command was "env VAR=... X" (zink and the native Mesa used it), and lightdm
+  gives the X server its own environment, so profile.d / environment.d never reached Xorg
+  - native GPU: the guest Mesa is made the system's Mesa through /etc/ld.so.conf.d/iceland-nctx.conf + ldconfig
+    (searched before /usr/lib64: Xorg glamor, display managers, Wayland compositors and every session) + a Vulkan
+    ICD file; removed again (ldconfig) in other modes; Fedora's Mesa files are never changed
+  - zink: Mesa's own driconf (loader option dri_driver=zink for the virtio_gpu device) instead of lightdm's
+    xserver-command; the old lightdm / profile.d / environment.d files are removed on every boot
+  - a running guest whose settings changed (--refresh): the display manager is restarted; if no desktop session
+    is up 25 s later the guest reboots once (fresh boots only, once per configuration), so the settings apply
+    through the boot path that works (kit-vm24 A-5)
+- the host keeps 2 GiB instead of 3 GiB for itself
+
+* Tue Oct 27 2026 mzak <mzak.amin@gmail.com> - 0.2-24
+- the guest agent receives the app's switches: the app shares its tools dir itself as gvmshare, but gvm-agent read
+  its flags (noglamor, autologin, wayland, zink) from tools/ of the share (gvm.sh's layout), so none ever applied in
+  app VMs; it now reads both layouts and lists what it found in /run/gvm-agent.flags
+- existing VMs: autologin on once (display defaults rev 3); the app installs its guest agent over
+  ssh (app key, cloud-init user) when the guest's is older and runs gvm-agent --refresh, which applies the switches at
+  once and restarts the display manager when its configuration changed and no desktop session is open
+- new Fedora 44+ VMs default to the native GPU (msm native context: GL freedreno + Vulkan turnip on the Adreno 840;
+  kit-vm23 N3: glmark2 2691 vs virgl 1768); feature gpu3d_native on; other distros keep virgl + venus; existing VMs
+  keep their display. iceland-vms-guest-mesa is now required, so the guest Mesa is always delivered; the agent uses it
+  on Fedora 44+ aarch64 guests only
+
 * Mon Oct 26 2026 mzak <mzak.amin@gmail.com> - 0.2-23
 - Send shortcuts to the VM: Super reaches the guest too (needs iceland-gvm >= 0.3-59, whose virtio keyboard
   advertises KEY_LEFTMETA / KEY_RIGHTMETA; kit-vm22 K-3); the setting's subtitle names Super, Alt+Tab and Escape

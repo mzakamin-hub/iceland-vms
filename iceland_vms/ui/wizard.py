@@ -156,11 +156,14 @@ class CreateWizard(Adw.Dialog):
         g = Adw.PreferencesGroup(title="Devices")
         self.e_net = Adw.SwitchRow(title="Network", subtitle="NAT through the tablet's connection", active=not test)
         g.add(self.e_net)
-        self.e_gpu = util.combo_row("Display", [("venus", "3D: OpenGL (virgl) + Vulkan (venus) - recommended"),
-                                               ("simplefb", "Software display (fallback)"),
-                                               ("2d", "2D window (virtio-gpu)"),
-                                               ("none", "None (serial console only)")],
-                                    3 if test else 0)
+        # 0.2-24: Fedora 44+ cloud images default to the native GPU (msm native context, config.new_vm_gpu)
+        native = config.new_vm_gpu(e.get("id", ""), host.features(), win) == "native"
+        items = ([("native", "3D: native GPU (GL + Vulkan on the Adreno) - recommended")] if native else []) + [
+            ("venus", "3D: OpenGL (virgl) + Vulkan (venus)" + ("" if native else " - recommended")),
+            ("simplefb", "Software display (fallback)"),
+            ("2d", "2D window (virtio-gpu)"),
+            ("none", "None (serial console only)")]
+        self.e_gpu = util.combo_row("Display", items, len(items) - 1 if test else 0)
         g.add(self.e_gpu)
         self.e_gpu.set_visible(not win)          # Windows: the software display (simplefb) only
         self.e_user = Adw.EntryRow(title="Windows account for the clean shutdown (ssh key, no password)", text="gvm")

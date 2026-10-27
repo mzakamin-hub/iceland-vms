@@ -10,19 +10,23 @@ hypervisor). crosvm, the guest kernel and the command-line tool come from the co
 from [iceland-linux](https://github.com/mzakamin-hub/iceland-linux). QEMU with the Gunyah accelerator
 (`iceland-qemu-gunyah`, sources in [`qemu-gunyah/`](qemu-gunyah/)) is an optional second backend.
 
-App id: `org.iceland.VirtualMachines`. Current version: **0.2-23** (with iceland-gvm 0.3-59 and iceland-qemu-gunyah 10.0.2-1).
+App id: `org.iceland.VirtualMachines`. Current version: **0.2-25** (with iceland-gvm 0.3-59 and iceland-qemu-gunyah 10.0.2-1).
 
 ## What works
 
 - **Linux VMs**: protected Gunyah VMs with the tablet's guest kernel; Fedora 44 Cloud images with cloud-init, NAT
   networking with port forwards, virtio disks, shared folders, clean shutdown through the guest agent. The app finds
   the root partition itself (GPT / MBR, file-system magic, btrfs subvolume).
-- **3D graphics**: virgl (OpenGL) and venus (Vulkan) on the Adreno GPU are the default display, with a GPU-composited
-  desktop in a window on the tablet's desktop.
-- **msm native context** (opt-in per VM, "3D: msm native context" in the app): the guest's own Mesa (freedreno for
+- **3D graphics**: virgl (OpenGL) and venus (Vulkan) on the Adreno GPU, with a GPU-composited desktop in a window on
+  the tablet's desktop.
+- **msm native context** ("3D: msm native context" in the app; the default for new Fedora 44 and later VMs, other
+  guests keep virgl + venus): the guest's own Mesa (freedreno for
   OpenGL, turnip for Vulkan) draws directly on the Adreno 840 through virglrenderer's msm native context; glmark2
   at 1280x800 scores about 2690 (virgl about 1770). The app delivers a matching guest Mesa
-  (`iceland-vms-guest-mesa`) into the VM; Fedora's Mesa in the guest is not changed.
+  (`iceland-vms-guest-mesa`) into the VM automatically; Fedora's Mesa packages in the guest are not changed.
+- **Guest agent**: the guest agent receives the app's display switches (glamor off, autologin, Wayland, zink), and
+  the app updates an older agent in a running Linux guest over ssh. Autologin into the desktop with lightdm or GDM
+  is on by default, also for existing Linux VMs.
 - **QEMU-Gunyah backend (optional)**: Settings > General > Backend; crosvm stays the default. With the
   `iceland-qemu-gunyah` package installed, a VM runs as a protected VM under QEMU 10.0.2 with the Gunyah accelerator,
   with 3D OpenGL (virgl) on the Adreno GPU in QEMU's window or over VNC, and starts and stops cleanly from the app.
@@ -67,21 +71,21 @@ App id: `org.iceland.VirtualMachines`. Current version: **0.2-23** (with iceland
 - **Send shortcuts to the VM** (Settings > Display, off by default): while the VM window has the keyboard focus,
   Super, Alt+Tab, Escape and similar desktop shortcuts reach the guest (crosvm VMs).
 - **Console, files and guards**: an interactive serial console and logs; offline snapshots (reflink copies), clone,
-  delete; one VM at a time; no start on low battery without a charger or when the tablet is hot; a memory reserve for
-  the host; every VM stops before the tablet suspends.
+  delete; one VM at a time; no start on low battery without a charger or when the tablet is hot; 2 GiB of memory kept for
+  the host (a 4 GiB Windows VM starts with apps open); every VM stops before the tablet suspends.
 
 ## Requirements and install
 
 kernel-iceland q90u or newer with the Gunyah modules (q90w2 is current; vhost-net needs q90s or newer, older kernels
 fall back to crosvm's own network) and iceland-gvm 0.3-59 with its virglrenderer 1.3.0-1.iceland1 (from the
 [iceland-gvm 0.3-59 release](https://github.com/mzakamin-hub/iceland-gvm/releases/tag/0.3-59)).
-iceland-vms-guest-mesa is needed only for the msm native context. iceland-qemu-gunyah 10.0.2-1 is needed only for the
+iceland-vms-guest-mesa (from the [0.2-23 release](https://github.com/mzakamin-hub/iceland-vms/releases/tag/0.2-23))
+is required since 0.2-24. iceland-qemu-gunyah 10.0.2-1 is needed only for the
 QEMU-Gunyah backend.
 
 ```bash
 sudo dnf install ./iceland-gvm-0.3-59.fc44.aarch64.rpm ./virglrenderer-1.3.0-1.iceland1.fc44.aarch64.rpm \
-                 ./iceland-vms-0.2-23.fc44.noarch.rpm
-sudo dnf install ./iceland-vms-guest-mesa-26.2.5-1.iceland1.fc44.aarch64.rpm   # optional: the msm native context
+                 ./iceland-vms-guest-mesa-26.2.5-1.iceland1.fc44.aarch64.rpm ./iceland-vms-0.2-25.fc44.noarch.rpm
 sudo dnf install ./iceland-qemu-gunyah-10.0.2-1.fc44.aarch64.rpm    # optional: the QEMU-Gunyah backend
 ```
 

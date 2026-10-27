@@ -30,6 +30,19 @@ FIRMWARES = ("standard", "ecam")        # boot.firmware for UEFI VMs
 GUEST_MESA_DIR = os.environ.get("IVMS_GUEST_MESA_DIR", os.path.join(SHARE_DIR, "guest-mesa"))
 
 
+def new_vm_gpu(os_id, features, windows=False):
+    """0.2-24: the display a NEW VM gets in the wizard. The msm native context (GL freedreno / Vulkan turnip on the
+    Adreno 840 itself; kit-vm23: glmark2 2691 vs virgl 1768) for Fedora 44+ cloud images when the feature is on and
+    iceland-vms-guest-mesa is installed (its Mesa is built against Fedora 44); otherwise virgl + venus. Windows: the
+    software display. Existing VMs keep their saved display."""
+    if windows:
+        return "simplefb"
+    m = re.match(r"fedora-(\d+)", os_id or "")
+    if m and int(m.group(1)) >= 44 and features.get("gpu3d_native") and guest_mesa_tarball():
+        return "native"
+    return "venus"
+
+
 def guest_mesa_tarball():
     """Path of the newest nctx-mesa-*.tar.gz of iceland-vms-guest-mesa, or None."""
     try:
@@ -121,7 +134,7 @@ LIMITS = {
     "shares": 4,
     "forwards": 16,
 }
-HOST_RESERVE_MIB = 3072          # the owner's rule: keep >= 3 GiB for the host
+HOST_RESERVE_MIB = 2048          # the owner's rule (27 Oct 2026): keep >= 2 GiB for the host
 
 
 class ConfigError(ValueError):
@@ -229,7 +242,7 @@ def default_config(vmid, name):
                     "vnc_lan": False,
                     "vnc_port": 5900,
                     "vnc_password": False,
-                    "defaults_rev": 2},
+                    "defaults_rev": 3},
         "sound": {"mode": "off"},
         "shares": [],                   # [{"path": "~/Public", "tag": "share0", "kind": "p9", "ro": True}]
         "cloud_init": {"enabled": False, "user": "gvm", "seed": "seed.img"},
@@ -480,7 +493,8 @@ def validate(cfg, features=None):
 
 # ---- load / save (as the user) ------------------------------------------------------------
 MEM_DEFAULTS_REV = 1          # 1 (0.2-10): hugepages on
-DISPLAY_DEFAULTS_REV = 2      # 1 (0.1-10): glamor off + Xorg; 2 (0.2-4): glamor back on for 3D VMs (vm-run v10d)
+DISPLAY_DEFAULTS_REV = 3      # 1 (0.1-10): glamor off + Xorg; 2 (0.2-4): glamor back on for 3D VMs (vm-run v10d);
+#                               3 (0.2-24): desktop autologin on (the guest agent now really receives the flag)
 
 
 def load(path):
@@ -489,12 +503,19 @@ def load(path):
     rev = (raw.get("display") or {}).get("defaults_rev", 0) if isinstance(raw, dict) else 0
     cfg = merged(raw)
     d = cfg.get("display", {})
-    if isinstance(d, dict) and rev < DISPLAY_DEFAULTS_REV:
+    if isinstance(d, dict) and rev < 2:
         # once per VM (the user can switch back afterwards): a 3D VM gets the GPU-composited Xorg desktop
         # (glamor on, fixed by the 0.3-23 guest kernel); other displays keep glamor off. The display mode itself
         # (2D / 3D / software) is the user's choice and is not changed.
         d["glamor"] = d.get("gpu") in ("virgl", "venus", "native", "zink")
-        d["session"], d["defaults_rev"] = "x11", DISPLAY_DEFAULTS_REV
+        d["session"], d["defaults_rev"] = "x11", 2
+    if isinstance(d, dict) and rev < 3:
+        # 0.2-24, once per VM (owner's choice): autologin on for Linux VMs. Until 0.2-24 the guest agent looked for
+        # its flags in tools/ of the share while the app shares the tools dir itself, so no flag ever applied; the
+        # app's agent now updates the guest's one (AgentRefresh) and the desktop logs in by itself.
+        if not is_windows(cfg):
+            d["autologin"] = True
+        d["defaults_rev"] = 3
     # 0.2-10: once per VM, 2 MiB guest memory pages on (the hugepages default); the user can turn it off afterwards
     if isinstance(raw, dict) and raw.get("mem_defaults_rev", 0) < MEM_DEFAULTS_REV:
         cfg["hugepages"], cfg["mem_defaults_rev"] = True, MEM_DEFAULTS_REV

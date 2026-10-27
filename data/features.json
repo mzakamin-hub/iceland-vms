@@ -4,7 +4,7 @@
   "gpu2d": true,
   "uefi": true,
   "gpu3d_virgl": true,
-  "gpu3d_native": false,
+  "gpu3d_native": true,
   "simplefb": true,
   "gpu3d_venus": true,
   "sound": false,
