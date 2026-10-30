@@ -10,7 +10,7 @@ hypervisor). crosvm, the guest kernel and the command-line tool come from the co
 from [iceland-linux](https://github.com/mzakamin-hub/iceland-linux). QEMU with the Gunyah accelerator
 (`iceland-qemu-gunyah`, sources in [`qemu-gunyah/`](qemu-gunyah/)) is an optional second backend.
 
-App id: `org.iceland.VirtualMachines`. Current version: **0.2-25** (with iceland-gvm 0.3-59 and iceland-qemu-gunyah 10.0.2-1).
+App id: `org.iceland.VirtualMachines`. Current version: **0.2-26** (with iceland-gvm 0.3-59 and iceland-qemu-gunyah 10.0.2-1).
 
 ## What works
 
@@ -85,7 +85,7 @@ QEMU-Gunyah backend.
 
 ```bash
 sudo dnf install ./iceland-gvm-0.3-59.fc44.aarch64.rpm ./virglrenderer-1.3.0-1.iceland1.fc44.aarch64.rpm \
-                 ./iceland-vms-guest-mesa-26.2.5-1.iceland1.fc44.aarch64.rpm ./iceland-vms-0.2-25.fc44.noarch.rpm
+                 ./iceland-vms-guest-mesa-26.2.5-1.iceland1.fc44.aarch64.rpm ./iceland-vms-0.2-26.fc44.noarch.rpm
 sudo dnf install ./iceland-qemu-gunyah-10.0.2-1.fc44.aarch64.rpm    # optional: the QEMU-Gunyah backend
 ```
 

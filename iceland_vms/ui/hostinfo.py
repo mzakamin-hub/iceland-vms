@@ -38,16 +38,27 @@ class HostDialog(Adw.Dialog):
         pp.add(g)
 
         g = Adw.PreferencesGroup(title="Hypervisor")
-        ver = host.gvm_version()
-        for k, v in (("iceland-gvm", ver or ("installed" if host.gvm_installed() else "not installed")),
-                     ("Gunyah modules for this kernel", "yes" if host.modules_match() else "no (kernel-iceland q90m+ has them)"),
+        slow = {}
+        for k, v in (("iceland-gvm", "checking..."), ("Gunyah modules for this kernel", "checking..."),
                      ("/dev/gunyah", "loaded" if host.gunyah_loaded() else "not loaded (loaded at the first start)"),
                      ("Guest kernel", host.guest_kernel_release() or "missing"),
                      ("UEFI firmware", "present" if __import__("os").path.exists(config.FIRMWARE) else "missing"),
-                     ("Running VMs", str(backend.running_count()))):
+                     ("Running VMs", str(win.running))):
             r = Adw.ActionRow(title=k, subtitle=v)
             r.add_css_class("property")
             g.add(r)
+            slow[k] = r
+
+        def facts():                # 0.2-26: rpm / modinfo in a thread (cached after the first time)
+            ver = host.gvm_version()
+            return (ver or ("installed" if host.gvm_installed() else "not installed"),
+                    "yes" if host.modules_match() else "no (kernel-iceland q90m+ has them)")
+
+        def show(res, err):
+            ver, mods = res if res else ("unknown", "unknown")
+            slow["iceland-gvm"].set_subtitle(ver)
+            slow["Gunyah modules for this kernel"].set_subtitle(mods)
+        util.in_thread(facts, show)
         pp.add(g)
 
         g = Adw.PreferencesGroup(title="Proven on this tablet",

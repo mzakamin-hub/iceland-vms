@@ -90,6 +90,22 @@ def combo_set(row, key):
         row.set_selected(row.keys.index(key))
 
 
+def set_label(row, i, label):
+    """Change item i's text of a combo row's string list, keeping the selection. A no-op when the text is the same
+    or while this row is already being relabelled (the splice re-selects, and notify::selected may call back)."""
+    model = row.get_model()
+    if getattr(row, "_relabel", False) or model.get_string(i) == label:
+        return
+    sel = row.get_selected()
+    row._relabel = True
+    try:
+        model.splice(i, 1, [label])
+        if row.get_selected() != sel:
+            row.set_selected(sel)
+    finally:
+        row._relabel = False
+
+
 def info_row(title, subtitle, icon="dialog-information-symbolic"):
     r = Adw.ActionRow(title=title, subtitle=subtitle)
     r.set_subtitle_lines(0)

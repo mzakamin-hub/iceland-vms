@@ -2,7 +2,7 @@
 # Built from a source tarball of this repository plus fw/out (the edk2-gunyah build, see fw/BUILD.md) on Fedora 44.
 Name:           iceland-vms
 Version:        0.2
-Release:        25%{?dist}
+Release:        26%{?dist}
 Summary:        Virtual Machines: protected VMs on the Gunyah hypervisor (crosvm, QEMU-Gunyah)
 License:        GPL-2.0-only AND BSD-2-Clause-Patent
 BuildArch:      noarch
@@ -45,6 +45,18 @@ make install DESTDIR=%{buildroot} PREFIX=/usr FW=fw/out
 /usr/share/doc/iceland-vms
 
 %changelog
+* Fri Oct 30 2026 mzak <mzak.amin@gmail.com> - 0.2-26
+- the window no longer hangs: opening Settings of a VM with the automatic backend (e.g. Windows 11) looped
+  forever (relabelling the selected "Automatic" item re-selected it, which relabelled it again); the label now
+  changes only when its text does, without re-entering
+- the window never waits for systemctl, rpm or modinfo: VM states come from a background thread (one systemctl
+  call for all VMs, every 3 s, every second while a VM starts or stops; a failed call keeps the last state);
+  disk usage, deleting a VM or a snapshot and writing the cloud-init seed run in threads; host facts are cached
+  (Refresh re-reads them); the Settings page is built when its tab is opened
+- less memory: at most 2 malloc arenas in the window and the helper, 4 in the VMM (crosvm / QEMU), unless
+  MALLOC_ARENA_MAX is set (window about 155 -> 87 MiB, crosvm about 90 MiB less per running VM)
+- the port-forward hint is shown again (its "<port>" broke the markup); the About dialog shows the real version
+
 * Tue Oct 27 2026 mzak <mzak.amin@gmail.com> - 0.2-25
 - guest agent, settings that change the display server (kit-vm24b B-4 / B-5 / N-4 / N-5 on q90w2): lightdm
   started no X server when its xserver-command was "env VAR=... X" (zink and the native Mesa used it), and lightdm

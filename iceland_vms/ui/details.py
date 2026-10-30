@@ -177,12 +177,19 @@ class DetailsPage(Adw.Bin):
         if cfg is None:
             return
         self.console.set_vm(cfg["id"])
-        self.settings = SettingsPage(self.win, cfg, self.on_saved)
-        self.settings_holder.set_child(self.settings)
-        self.st = backend.state(cfg["id"])
+        self.settings = None                # 0.2-26: built when the Settings tab is opened (the largest page)
+        self.settings_holder.set_child(None)
+        if self.stack.get_visible_child_name() == "settings":
+            self.build_settings()
+        self.st = self.win.state_of(cfg["id"])
         self.build_overview()
         self.build_snapshots()
         self.refresh_buttons()
+
+    def build_settings(self):
+        if self.cfg and self.settings is None:
+            self.settings = SettingsPage(self.win, self.cfg, self.on_saved)
+            self.settings_holder.set_child(self.settings)
 
     def on_saved(self, cfg):
         self.cfg = cfg
@@ -192,7 +199,7 @@ class DetailsPage(Adw.Bin):
     def refresh_state(self):
         if not self.cfg:
             return
-        st = backend.state(self.cfg["id"])
+        st = self.win.state_of(self.cfg["id"])
         changed = st != self.st
         self.st = st
         if changed:
@@ -215,7 +222,9 @@ class DetailsPage(Adw.Bin):
 
     def on_tab(self, *_):
         name = self.stack.get_visible_child_name()
-        if name == "logs":
+        if name == "settings":
+            self.build_settings()
+        elif name == "logs":
             self.load_log()
         elif name == "console" and self.st["state"] == "running":
             self.console.connect_()
@@ -281,15 +290,23 @@ class DetailsPage(Adw.Bin):
             ("Display", {"none": "None (console only)", "2d": "2D window", "virgl": "3D OpenGL (virgl)", "native": "3D native context",
                          "venus": "3D OpenGL (virgl) + Vulkan (venus)", "zink": "3D Vulkan (venus), OpenGL through zink",
                          "simplefb": "Software display (shared framebuffer)"}[c["display"]["gpu"]]),
-            ("Disk usage", util.human_size(storage.usage(self.win.home, c))),
+            ("Disk usage", "counting..."),
         ]
         for t, s in rows:
             r = Adw.ActionRow(title=t, subtitle=s)
             r.add_css_class("property")
             g.add(r)
+        # 0.2-26: walking the VM folder (disks, snapshots) runs in a thread; a later rebuild drops a stale answer
+        self._ov_gen = getattr(self, "_ov_gen", 0) + 1
+        gen, home = self._ov_gen, self.win.home
+
+        def usage_done(n, _err, row=r):
+            if gen == self._ov_gen:
+                row.set_subtitle(util.human_size(n) if n is not None else "unknown")
+        util.in_thread(lambda: storage.usage(home, c), usage_done)
 
         if st["state"] in ("stopped", "failed"):
-            why = host.start_guard(c, running=backend.running_count())
+            why = host.start_guard(c, running=self.win.running)
             if why:
                 g = group("Cannot start now")
                 for w in why:
@@ -394,20 +411,28 @@ class DetailsPage(Adw.Bin):
         except config.ConfigError as e:
             util.error(self.win, "Cannot start", str(e))
             return
-        why = host.start_guard(c, running=backend.running_count())
+        why = host.start_guard(c, running=self.win.running)
         if why:
             util.error(self.win, "Cannot start", "\n".join(why))
             return
-        if c["cloud_init"]["enabled"] and not os.path.exists(os.path.join(config.vm_dir(self.win.home, c["id"]),
-                                                                          c["cloud_init"]["seed"])):
-            try:
-                seed.write_seed(self.win.home, c)
-            except Exception as e:
-                util.error(self.win, "Cannot write the cloud-init seed", str(e))
-                return
-        self.st = {"state": "starting", "message": "Waiting for authorization"}
+        self.st = {"state": "starting", "message": "Preparing"}
         self.build_overview()
         self.refresh_buttons()
+        if c["cloud_init"]["enabled"] and not os.path.exists(os.path.join(config.vm_dir(self.win.home, c["id"]),
+                                                                          c["cloud_init"]["seed"])):
+            def seeded(_r, err):            # 0.2-26: the seed (mtools) is written in a thread
+                if err:
+                    util.error(self.win, "Cannot write the cloud-init seed", err)
+                    self.win.poll()
+                    return
+                self._launch(c)
+            util.in_thread(lambda: seed.write_seed(self.win.home, c), seeded)
+            return
+        self._launch(c)
+
+    def _launch(self, c):
+        self.st = {"state": "starting", "message": "Waiting for authorization"}
+        self.build_overview()
 
         def done(ok, out, err):
             if not ok:
@@ -466,18 +491,28 @@ class DetailsPage(Adw.Bin):
         if self.st["state"] not in ("stopped", "failed"):
             util.error(self.win, "Cannot delete", "Stop the virtual machine first.")
             return
-        size = util.human_size(storage.usage(self.win.home, self.cfg))
+        cfg, home = self.cfg, self.win.home
 
         def go(resp):
-            if resp == "delete":
-                storage.delete_vm(self.win.home, self.cfg)
-                self.cfg = None
+            if resp != "delete":
+                return
+
+            def deleted(_r, err):           # 0.2-26: removing GiB-sized disks runs in a thread
+                if err:
+                    util.error(self.win, "Delete failed", err)
+                    return
+                if self.cfg and self.cfg["id"] == cfg["id"]:
+                    self.cfg = None
                 self.win.reload()
                 self.win.toast("Deleted")
-        util.alert(self.win, "Delete %s?" % self.cfg["name"],
-                   "Its disks, snapshots and settings (%s) are deleted permanently. Downloaded ISOs and images "
-                   "stay in the shared folders." % size,
-                   (("cancel", "Cancel"), ("delete", "Delete")), default="cancel", destructive="delete", callback=go)
+            util.in_thread(lambda: storage.delete_vm(home, cfg), deleted)
+
+        def ask(n, _err):
+            util.alert(self.win, "Delete %s?" % cfg["name"],
+                       "Its disks, snapshots and settings (%s) are deleted permanently. Downloaded ISOs and images "
+                       "stay in the shared folders." % (util.human_size(n) if n is not None else "size unknown"),
+                       (("cancel", "Cancel"), ("delete", "Delete")), default="cancel", destructive="delete", callback=go)
+        util.in_thread(lambda: storage.usage(home, cfg), ask)
 
     def open_folder(self):
         Gio.AppInfo.launch_default_for_uri(
@@ -493,7 +528,7 @@ class DetailsPage(Adw.Bin):
 
     def autostart_all(self):
         for cfg in storage.list_vms(self.win.home):
-            if cfg["autostart"] and backend.state(cfg["id"])["state"] == "stopped":
+            if cfg["autostart"] and cfg["id"] in self.win.rows and self.win.state_of(cfg["id"])["state"] == "stopped":
                 self.win.listbox.select_row(self.win.rows[cfg["id"]])
                 self.start()
                 break          # one VM at a time
@@ -551,8 +586,8 @@ class DetailsPage(Adw.Bin):
     def delete_snapshot(self, name):
         def go(resp):
             if resp == "delete":
-                storage.delete_snapshot(self.win.home, self.cfg, name)
-                self.build_snapshots()
+                util.in_thread(lambda: storage.delete_snapshot(self.win.home, self.cfg, name),
+                               lambda r, e: util.error(self.win, "Delete failed", e) if e else self.build_snapshots())
         util.alert(self.win, "Delete this snapshot?", "", (("cancel", "Cancel"), ("delete", "Delete")),
                    default="cancel", destructive="delete", callback=go)
 

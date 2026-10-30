@@ -26,7 +26,7 @@ import sys
 import threading
 import time
 
-from . import config, crosvmargs, gvmlib, host, portproxy, qemuargs
+from . import config, crosvmargs, gvmlib, host, limit_malloc_arenas, portproxy, qemuargs
 
 CROSVM = os.path.join(config.GVM_DIR, "crosvm")
 KERNEL = os.path.join(config.GVM_DIR, "guest", "Image")
@@ -1163,9 +1163,7 @@ class Supervisor:
         else:
             argv, env = crosvmargs.build(self.cfg, self.res, self.feats)
             binary = [CROSVM, "--log-level", "info"]
-        e = dict(os.environ, **env)
-        e["CROSVM_GVM_WINDOW_TITLE"] = "%s - Virtual Machines" % self.cfg["name"]
-        e["CROSVM_GVM_APP_ID"] = "org.iceland.VirtualMachines"
+        e = vmm_env(os.environ, env, self.cfg)
         clog = open(os.path.join(self.rdir, "crosvm.log"), "ab", buffering=0)
         self._log_off = os.fstat(clog.fileno()).st_size     # display_watch: only this start's lines (0.2-22)
         os.fchown(clog.fileno(), 0, self.gid)
@@ -1255,6 +1253,20 @@ def verb_supervise(uid, vmid):
     return Supervisor(uid, vmid).run()
 
 
+VMM_MALLOC_ARENAS = 4      # crosvm, 2 GiB venus guest: ~151 MiB anonymous memory by default, ~60 with 4 (or 2) arenas
+
+
+def vmm_env(base, env, cfg):
+    """The VMM's environment: ours + crosvmargs / qemuargs' + the window's title / app id. glibc's default arena count
+    (8 per core) left ~90 MiB of mostly free malloc memory in crosvm's 52 threads, so the VMM gets
+    MALLOC_ARENA_MAX unless the environment already sets one."""
+    e = dict(base, **env)
+    e["CROSVM_GVM_WINDOW_TITLE"] = "%s - Virtual Machines" % cfg["name"]
+    e["CROSVM_GVM_APP_ID"] = "org.iceland.VirtualMachines"
+    e.setdefault("MALLOC_ARENA_MAX", str(VMM_MALLOC_ARENAS))
+    return e
+
+
 VERBS = {"start": (verb_start, 1), "shutdown": (verb_shutdown, 1), "stop": (verb_stop, 1),
          "force-off": (verb_force_off, 1),
          "stop-all": (verb_stop_all, 0), "net-down": (verb_net_down, 0), "unload": (verb_unload, 0),
@@ -1266,6 +1278,7 @@ def main(args):
         print("usage: iceland-vms-helper start|shutdown|stop ID | stop-all | net-down | unload", file=sys.stderr)
         return 2
     os.umask(0o022)
+    limit_malloc_arenas()               # the supervisor lives as long as its VM, with several threads
     try:
         r = VERBS[args[0]][0](*args[1:])
         return r or 0

@@ -3,6 +3,9 @@
 import sys
 
 sys.path.insert(0, "/usr/share/iceland-vms/lib")
+import iceland_vms  # noqa: E402
+
+iceland_vms.limit_malloc_arenas()       # before GTK starts its threads
 from iceland_vms.ui.app import main  # noqa: E402
 
 sys.exit(main())

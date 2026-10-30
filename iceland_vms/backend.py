@@ -42,8 +42,11 @@ def run_state(vmid):
 
 def state(vmid):
     """dict(state=..., ip=..., message=...) combining systemd and the supervisor's state file."""
-    us = unit_state(vmid)
-    rs = run_state(vmid)
+    return combine(unit_state(vmid), run_state(vmid))
+
+
+def combine(us, rs):
+    """The app's state from a unit's ActiveState and the supervisor's state.json contents."""
     if us in ("active", "activating", "reloading"):
         st = rs.get("state", "starting")
         if st in ("stopped", "failed"):
@@ -63,6 +66,97 @@ def running_count():
         return len([x for x in r.stdout.splitlines() if x.strip()])
     except (OSError, subprocess.TimeoutExpired):
         return 0
+
+
+TRANSITIONAL = ("starting", "stopping", "rebooting")
+
+
+def vm_units():
+    """{unit: ActiveState} of every iceland-vm-* unit systemd knows (all users), from ONE systemctl call.
+    None when systemctl failed or timed out (the caller keeps what it had)."""
+    try:
+        r = subprocess.run(["systemctl", "list-units", "--all", "--type=service", "--plain", "--no-legend", "--full",
+                            "iceland-vm-*"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    out = {}
+    for line in r.stdout.splitlines():
+        f = line.split()
+        if len(f) >= 3 and f[0].startswith("iceland-vm-"):
+            out[f[0]] = f[2]                # UNIT LOAD ACTIVE SUB DESCRIPTION
+    return out
+
+
+def states(vmids, units=None):
+    """({vmid: state dict}, running count) for this user's VMs; units from vm_units(). None if it failed."""
+    if units is None:
+        units = vm_units()
+    if units is None:
+        return None
+    u = uid()
+    st = {v: combine(units.get(config.unit_name(u, v), "inactive"), run_state(v)) for v in vmids}
+    running = len([a for a in units.values() if a in ("active", "activating")])
+    return st, running
+
+
+class StateMonitor:
+    """Polls the VMs' states off the UI thread (0.2-26: the window ran one systemctl per VM every 2 s on its
+    main thread, so a slow systemd - a VM starting, memory pressure - froze it). One systemctl per round,
+    never two rounds at once; every second while a VM is changing state, else every `interval` seconds.
+    on_update(states, running) is called from the worker thread, only when something changed or after kick()."""
+
+    def __init__(self, on_update, interval=3.0, busy_interval=1.0, collect=states):
+        self.on_update, self.interval, self.busy_interval, self.collect = on_update, interval, busy_interval, collect
+        self.vmids = []
+        self.last = None
+        self.forced = True
+        self.wake = threading.Event()
+        self.stopped = False
+        self.lock = threading.Lock()
+        self.t = None
+
+    def set_vms(self, vmids):
+        with self.lock:
+            self.vmids = list(vmids)
+        self.kick()
+
+    def kick(self):
+        """Poll now and report even when nothing changed (after an action, or a new VM list)."""
+        self.forced = True
+        self.wake.set()
+
+    def start(self):
+        if self.t is None:
+            self.t = threading.Thread(target=self.loop, name="vm-states", daemon=True)
+            self.t.start()
+
+    def stop(self):
+        self.stopped = True
+        self.wake.set()
+
+    def poll_once(self):
+        with self.lock:
+            ids = list(self.vmids)
+        forced, self.forced = self.forced, False
+        res = self.collect(ids)
+        if res is None:                     # systemctl failed: keep the last answer
+            return self.last
+        if forced or res != self.last:
+            self.last = res
+            self.on_update(*res)
+        return res
+
+    def loop(self):
+        while not self.stopped:
+            self.wake.clear()
+            try:
+                res = self.poll_once()
+            except Exception:  # noqa: BLE001 - never kill the poller
+                res = self.last
+            busy = res is not None and any(s["state"] in TRANSITIONAL for s in res[0].values())
+            self.wake.wait(self.busy_interval if busy else self.interval)
 
 
 def helper_argv(verb, vmid=None):

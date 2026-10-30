@@ -153,6 +153,10 @@ def gvm_installed():
 
 
 def gvm_version():
+    return cached("gvm_version", _gvm_version)
+
+
+def _gvm_version():
     try:
         r = subprocess.run(["rpm", "-q", "--qf", "%{VERSION}-%{RELEASE}", "iceland-gvm"],
                            capture_output=True, text=True, timeout=10)
@@ -161,8 +165,28 @@ def gvm_version():
         return None
 
 
+_facts = {}
+
+
+def forget():
+    """Drop the cached host facts (the window's Refresh; a package may have changed)."""
+    _facts.clear()
+
+
+def cached(name, fn):
+    """fn() once per process (or until forget()): rpm / modinfo cost a fork each and do not change while the
+    kernel runs (0.2-26: the window ran them on its main thread at every list reload)."""
+    if name not in _facts:
+        _facts[name] = fn()
+    return _facts[name]
+
+
 def modules_match():
     """True when Gunyah host modules for the running kernel exist (in the kernel, or in an old iceland-gvm payload)."""
+    return cached("modules_match", _modules_match)
+
+
+def _modules_match():
     try:
         if subprocess.run(["modinfo", "-n", "gunyah_rsc_mgr"], capture_output=True, timeout=10).returncode == 0:
             return True

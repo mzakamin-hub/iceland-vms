@@ -55,6 +55,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.home = backend.home()
         storage.ensure_layout(self.home)
         self.rows = {}
+        self.states, self.running, self.pending_autostart = {}, 0, False
         self.toasts = Adw.ToastOverlay()
 
         # sidebar
@@ -109,8 +110,11 @@ class MainWindow(Adw.ApplicationWindow):
         bp.add_setter(self.split, "collapsed", True)
         self.add_breakpoint(bp)
 
+        # 0.2-26: VM states come from a worker thread; nothing on this thread waits for systemctl / rpm / modinfo
+        self.monitor = backend.StateMonitor(lambda st, n: GLib.idle_add(self.on_states, st, n))
         self.reload()
-        GLib.timeout_add_seconds(2, self.poll)
+        self.monitor.start()
+        self.connect("close-request", lambda *_: self.monitor.stop() and False)
 
     def toast(self, text):
         self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
@@ -124,6 +128,7 @@ class MainWindow(Adw.ApplicationWindow):
         self.rows = {}
         for cfg in vms:
             row = VmRow(cfg)
+            row.update(cfg, self.state_of(cfg["id"]))
             self.rows[cfg["id"]] = row
             self.listbox.append(row)
         self.sidebar_stack.set_visible_child_name("list" if vms else "empty")
@@ -132,23 +137,39 @@ class MainWindow(Adw.ApplicationWindow):
         elif not vms:
             self.details.show(None)
             self.content_stack.set_visible_child_name("none")
-        self.poll()
+        self.monitor.set_vms(list(self.rows))
         self.update_banner()
 
     def update_banner(self):
-        msgs = []
-        if not host.gvm_installed():
-            msgs.append("iceland-gvm is not installed: VMs cannot start")
-        elif not host.modules_match():
-            msgs.append("This kernel has no Gunyah modules: install kernel-iceland q90m or later")
-        self.banner.set_title("; ".join(msgs))
-        self.banner.set_revealed(bool(msgs))
+        def facts():
+            if not host.gvm_installed():
+                return "iceland-gvm is not installed: VMs cannot start"
+            if not host.modules_match():
+                return "This kernel has no Gunyah modules: install kernel-iceland q90m or later"
+            return ""
+
+        def show(msg, _err):
+            self.banner.set_title(msg or "")
+            self.banner.set_revealed(bool(msg))
+        util.in_thread(facts, show)
+
+    def state_of(self, vmid):
+        """The last state the monitor reported (stopped until its first round)."""
+        return self.states.get(vmid, {"state": "stopped", "ip": None, "message": "", "agent": False})
 
     def poll(self):
+        """Ask the monitor for a fresh round now (after an action); the answer arrives in on_states."""
+        self.monitor.kick()
+
+    def on_states(self, states, running):
+        self.states, self.running = states, running
         for vid, row in self.rows.items():
-            row.update(row.cfg, backend.state(vid))
+            row.update(row.cfg, self.state_of(vid))
         self.details.refresh_state()
-        return True
+        if self.pending_autostart:
+            self.pending_autostart = False
+            self.details.autostart_all()
+        return False
 
     def on_selected(self, _lb, row):
         if row is None:
@@ -167,7 +188,7 @@ class App(Adw.Application):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.DEFAULT_FLAGS)
         self.argv = argv
         self.win = None
-        for name, cb in (("host", self.on_host), ("about", self.on_about), ("refresh", lambda *_: self.win.reload()),
+        for name, cb in (("host", self.on_host), ("about", self.on_about), ("refresh", self.on_refresh),
                          ("quit", lambda *_: self.quit())):
             a = Gio.SimpleAction.new(name, None)
             a.connect("activate", cb)
@@ -183,7 +204,12 @@ class App(Adw.Application):
             from . import shots
             shots.run(self.win, self.argv[self.argv.index("--screenshots") + 1])
         elif "--autostart" in self.argv:
-            self.win.details.autostart_all()
+            self.win.pending_autostart = True       # after the monitor's first round (real states)
+            self.win.poll()
+
+    def on_refresh(self, *_):
+        host.forget()
+        self.win.reload()
 
     def on_host(self, *_):
         HostDialog(self.win).present(self.win)

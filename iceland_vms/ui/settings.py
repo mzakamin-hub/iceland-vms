@@ -67,7 +67,7 @@ class SettingsPage(Gtk.Box):
     # ---- building ----
     def build(self):
         c, f, p = self.cfg, self.feats, self.page
-        self.banner.set_revealed(backend.state(c["id"])["state"] not in ("stopped", "failed"))
+        self.banner.set_revealed(self.win.state_of(c["id"])["state"] not in ("stopped", "failed"))
 
         g = Adw.PreferencesGroup(title="General")
         self.name = Adw.EntryRow(title="Name", text=c["name"])
@@ -241,7 +241,7 @@ class SettingsPage(Gtk.Box):
         p.add(g)
         self.fw_group = Adw.PreferencesGroup(title="Port forwards",
                                              description="Host port -> guest port while the VM runs: from other devices "
-                                             "via the tablet's Wi-Fi address, and from the tablet as localhost:<port>.")
+                                             "via the tablet's Wi-Fi address, and from the tablet as localhost:&lt;port&gt;.")
         self.fw_group.set_header_suffix(util.button(icon="list-add-symbolic", css=["flat"], tooltip="Add forward",
                                                     cb=self.add_forward))
         p.add(self.fw_group)
@@ -401,8 +401,11 @@ class SettingsPage(Gtk.Box):
         except Exception:
             return
         rb = config.resolve_backend(c, self.feats)
-        self.backend.get_model().splice(0, 1, ["Automatic (%s)" % config.BACKEND_LABEL[
-            config.resolve_backend(dict(c, backend="auto"), self.feats)]])
+        # 0.2-26: relabel "Automatic (...)" only when the text changes, without re-entering. Replacing the selected
+        # item 0 at every call re-selected it, notify::selected called back here, and the window spun forever
+        # (Settings of any VM with the automatic backend)
+        util.set_label(self.backend, 0, "Automatic (%s)" % config.BACKEND_LABEL[
+            config.resolve_backend(dict(c, backend="auto"), self.feats)])
         bad = config.backend_conflicts(c, rb, self.feats)
         other = "crosvm" if rb == "qemu" else "qemu"
         can_switch = bad and not config.backend_conflicts(dict(c, backend=other), other, self.feats) and             (other == "crosvm" or self.feats["qemu_backend"])
